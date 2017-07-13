@@ -211,7 +211,7 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
     irwService(nbg)
       .historyReactive(path)
       .mapAsync(defaultParallelism) {
-        case (_, uuid) => irwService.readUUIDAsync(uuid).andThen {
+        case (_, uuid) => irwService(nbg).readUUIDAsync(uuid).andThen {
           case Failure(fail) => logger.error(s"uuid [$uuid] could not be fetched from cassandra", fail)
           case Success(EmptyBox) => logger.error(s"uuid [$uuid] could not be fetched from cassandra: got EmptyBox")
           case Success(BoxedFailure(e)) => logger.error(s"uuid [$uuid] could not be fetched from cassandra: got BoxedFailure",e)
@@ -533,7 +533,7 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
       ???
     }
 
-    def searchViaCache(nbg: Boolean = newBG) = cmwell.zcache.l1l2(wSearch(_,nbg))(_.getDigest, deserializer, serializer)()(zCache)
+    def searchViaCache(nbg: Boolean = newBG) = cmwell.zcache.l1l2[SearchRequest,SearchResults](wSearch(_,nbg))(_.getDigest, deserializer, serializer)()(zCache)
   }
 
   def search(pathFilter: Option[PathFilter] = None,
@@ -736,9 +736,9 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
     proxyOps(nbg).fix(path, cmwell.ws.Settings.xFixNumRetries,limit)
   }
 
-  def rFix(path: String, parallelism: Int = 1): Future[Source[(Boolean,String),NotUsed]] = {
+  def rFix(path: String, parallelism: Int = 1, nbg: Boolean = newBG): Future[Source[(Boolean,String),NotUsed]] = {
     logger.debug(s"x-fix&reactive invoked for path $path")
-    proxyOps.rFix(path, cmwell.ws.Settings.xFixNumRetries, parallelism)
+    proxyOps(nbg).rFix(path, cmwell.ws.Settings.xFixNumRetries, parallelism)
   }
 
   def info(path: String, limit: Int, nbg: Boolean = newBG): Future[(CasInfo, EsInfo, ZStoreInfo)] = proxyOps(nbg).info(path,limit)
@@ -881,29 +881,29 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
     }.map(_ => ())
   }
 
-//  def purgePath2(path: String, limit: Int, nbg: Boolean = newBG): Future[Unit] = {
-//
-//    import cmwell.util.concurrent.retry
-//
-//    import scala.language.postfixOps
-//
-//    irwService.historyAsync(path,limit).map { casHistory =>
-//
-//      val uuids = casHistory.map(_._2)
-//
-//      retry(3, 1.seconds) {
-//        val purgeEsByUuids = ftsService(nbg).purgeByUuidsFromAllIndexes(uuids)
-//        purgeEsByUuids.flatMap { bulkResponse =>
-//          if (bulkResponse.hasFailures) {
-//            throw new Exception("purge from es by uuids from all Indexes failed: " + bulkResponse.buildFailureMessage())
-//          } else {
-//            val purgeFromInfoton = Future.traverse(uuids)(irwService.purgeFromInfotonsOnly(_))
-//            purgeFromInfoton.flatMap(_ => irwService.purgePathOnly(path))
-//          }
-//        }
-//      }
-//    }
-//  }
+  def purgePath2(path: String, limit: Int, nbg: Boolean = newBG): Future[Unit] = {
+
+    import cmwell.util.concurrent.retry
+
+    import scala.language.postfixOps
+
+    irwService(nbg).historyAsync(path,limit).map { casHistory =>
+
+      val uuids = casHistory.map(_._2)
+
+      retry(3, 1.seconds) {
+        val purgeEsByUuids = ftsService(nbg).purgeByUuidsFromAllIndexes(uuids)
+        purgeEsByUuids.flatMap { bulkResponse =>
+          if (bulkResponse.hasFailures) {
+            throw new Exception("purge from es by uuids from all Indexes failed: " + bulkResponse.buildFailureMessage())
+          } else {
+            val purgeFromInfoton = Future.traverse(uuids)(irwService(nbg).purgeFromInfotonsOnly(_))
+            purgeFromInfoton.flatMap(_ => irwService(nbg).purgePathOnly(path))
+          }
+        }
+      }
+    }
+  }
 
   //var persistTopicOffset = new AtomicLong()
 

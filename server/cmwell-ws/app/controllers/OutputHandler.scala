@@ -49,7 +49,7 @@ import scala.util.{Failure, Success, Try}
  * To change this template use File | Settings | File Templates.
  */
 @Singleton
-class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS) extends Controller with LazyLogging with TypeHelpers {
+class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS, authUtils: AuthUtils) extends Controller with LazyLogging with TypeHelpers {
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
   def overrideMimetype(default: String, req: Request[AnyContent]): (String, String) = req.getQueryString("override-mimetype") match {
@@ -232,7 +232,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS) extends Controller 
           val irretrievableUuids = byUuid.filterNot(uuid => coreInfotons.exists(_.uuid == uuid)).map(uuid => s"/ii/$uuid")
           val irretrievablePaths = byPath.filterNot(path => coreInfotons.exists(_.path == path))
 
-          val notAllowedPaths = AuthUtils.filterNotAllowedPaths(infotons.map(_.path), PermissionLevel.Read, AuthUtils.extractTokenFrom(req)).toVector
+          val notAllowedPaths = authUtils.filterNotAllowedPaths(infotons.map(_.path), PermissionLevel.Read, authUtils.extractTokenFrom(req)).toVector
           val allowedInfotons = infotons.filterNot(i => notAllowedPaths.contains(i.path))
 
           ok -> RetrievablePaths(allowedInfotons, irretrievableUuids ++ irretrievablePaths ++ notAllowedPaths)

@@ -45,7 +45,7 @@ import cmwell.ws.util._
 import cmwell.ws.{Settings, Streams}
 import com.typesafe.scalalogging.LazyLogging
 import k.grid.{ClientActor, Grid, GridJvm, RestartJvm}
-import ld.cmw.PassiveFieldTypesCache
+import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache, PassiveFieldTypesCache}
 import ld.exceptions.BadFieldTypeException
 import logic.{CRUDServiceFS, InfotonValidator}
 import markdown.MarkdownFormatter
@@ -100,12 +100,22 @@ object ApplicationUtils {
 }
 
 @Singleton
-class Application @Inject()(bulkScrollHandler: BulkScrollHandler, activeInfotonGenerator: ActiveInfotonGenerator, cachedSpa: CachedSpa, crudServiceFS: CRUDServiceFS) extends Controller with FileInfotonCaching with LazyLogging {
+class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
+                            activeInfotonGenerator: ActiveInfotonGenerator,
+                            cachedSpa: CachedSpa,
+                            crudServiceFS: CRUDServiceFS,
+                            nCache: NbgPassiveFieldTypesCache,
+                            oCache: ObgPassiveFieldTypesCache,
+                            tbg: NbgToggler,
+                            streams: Streams,
+                            authUtils: AuthUtils) extends Controller with FileInfotonCaching with LazyLogging {
 
   import ApplicationUtils._
 
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
+  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
+  def typesCache(req: Request[_]) = if(req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false) || tbg.get) nCache else oCache
   def isReactive[A](req: Request[A]): Boolean = req.getQueryString("reactive").fold(false)(!_.equalsIgnoreCase("false"))
 
   //TODO: validate query params
@@ -120,7 +130,7 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler, activeInfotonG
     }
   }
 
-  def handleTypesCacheGet = Action(Ok(PassiveFieldTypesCache.getState))
+  def handleTypesCacheGet = Action(r => Ok(typesCache(r).getState))
 
   def handleGET(path:String) = Action.async { implicit originalRequest =>
 
@@ -141,8 +151,6 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler, activeInfotonG
         case Operation.stream() => handleStream(request)
         case Operation.multiStream() => handleBoostedStream(request)
         case Operation.superStream() => handleSuperStream(request)
-//        case Operation.superMStream() => handleSuperMultiStream(request)
-//        case Operation.searchStream() => handleSearchStream(request)
         case Operation.queueStream() => handleQueueStream(request)
         case Operation.bulkConsumer() => bulkScrollHandler.handle(request)
         case Operation.fix() => handleFix(request)
@@ -299,8 +307,8 @@ callback=< [URL] >
 
   private def handleGetForActiveInfoton(req: Request[AnyContent], path: String) = Try {
     // todo: fix this.. should check that the token is valid...
-    val tokenOpt = AuthUtils.extractTokenFrom(req)
-    val isRoot = AuthUtils.isValidatedAs(tokenOpt, "root")
+    val tokenOpt = authUtils.extractTokenFrom(req)
+    val isRoot = authUtils.isValidatedAs(tokenOpt, "root")
     val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
 
     val length = req.getQueryString("length").flatMap(asInt).getOrElse(if (req.getQueryString("format").isEmpty) 13 else 0) // default is 0 unless 1st request for the ajax app
@@ -314,7 +322,7 @@ callback=< [URL] >
 
   def handleZzGET(key: String) = Action.async {
     implicit req => {
-      val allowed = AuthUtils.isOperationAllowedForUser(security.Admin, AuthUtils.extractTokenFrom(req), evenForNonProdEnv = true)
+      val allowed = authUtils.isOperationAllowedForUser(security.Admin, authUtils.extractTokenFrom(req), evenForNonProdEnv = true)
 
       def mapToResp(task: Future[_]): Future[Result] = {
         val p = Promise[Result]
@@ -359,7 +367,7 @@ callback=< [URL] >
 
   def handleUuidGET(uuid: String) = Action.async {
     implicit req => {
-      def allowed(infoton: Infoton, level: PermissionLevel = PermissionLevel.Read) = AuthUtils.filterNotAllowedPaths(Seq(infoton.path), level, AuthUtils.extractTokenFrom(req)).isEmpty
+      def allowed(infoton: Infoton, level: PermissionLevel = PermissionLevel.Read) = authUtils.filterNotAllowedPaths(Seq(infoton.path), level, authUtils.extractTokenFrom(req)).isEmpty
       val isPurgeOp = req.getQueryString("op").contains("purge")
       def fields = req.getQueryString("fields").map(FieldNameConverter.toActualFieldNames)
       val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
@@ -455,15 +463,15 @@ callback=< [URL] >
 
               val p = Promise[Result]()
               for {
-                either <- infotonPathDeletionAllowed(normalizedPath, request.getQueryString("recursive").getOrElse("true").toBoolean,nbg)
+                either <- infotonPathDeletionAllowed(normalizedPath, request.getQueryString("recursive").getOrElse("true").toBoolean,crudServiceFS,nbg)
               } {
                 (fields.isDefined, either) match {
-                  case (true, _) => crudServiceFS.deleteInfoton(normalizedPath, fields, nbg)
+                  case (true, _) => crudServiceFS.deleteInfoton(normalizedPath, fields)
                     .onComplete {
                       case Success(b) => p.success(Ok(Json.obj("success" -> b)))
                       case Failure(e) => p.success(InternalServerError(Json.obj("success" -> false, "message" -> e.getMessage)))
                     }
-                  case (false, Right(paths)) => crudServiceFS.deleteInfotons(paths.map(_ -> None).toList, nbg)
+                  case (false, Right(paths)) => crudServiceFS.deleteInfotons(paths.map(_ -> None).toList)
                     .onComplete {
                       case Success(b) => p.success(Ok(Json.obj("success" -> b)))
                       case Failure(e) => p.success(InternalServerError(Json.obj("success" -> false, "message" -> e.getMessage)))
@@ -499,7 +507,7 @@ callback=< [URL] >
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
         val withData = request.getQueryString("with-data")
         val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
-        val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
+        val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
         fieldsFiltersFut.flatMap { fieldFilter =>
 
           val formatter = request.getQueryString("format").getOrElse("json") match {
@@ -599,7 +607,7 @@ callback=< [URL] >
         format match {
           case f if !Set("text", "path", "tsv", "tab", "nt", "ntriples", "nq", "nquads")(f.toLowerCase) && !f.toLowerCase.startsWith("json") => Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "not a streamable type (use 'text','tsv','ntriples', 'nquads', or any json)")))
           case FormatExtractor(formatType) => {
-            val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
+            val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
             fieldsFiltersFut.flatMap { fieldFilter =>
               fieldsMaskFut.flatMap { fieldsMask =>
 
@@ -631,7 +639,7 @@ callback=< [URL] >
                   if (from.isEmpty && to.isEmpty) None
                   else Some(DatesFilter(from, to))
                 }
-                cmwell.ws.Streams.multiScrollSource(
+                streams.multiScrollSource(
                   pathFilter = pathFilter,
                   fieldFilter = fieldFilter,
                   datesFilter = datesFilter,
@@ -639,8 +647,7 @@ callback=< [URL] >
                   withDeleted = withDeleted,
                   nbg = nbg).map {
                   case (source, hits) => {
-                    import cmwell.ws.Streams._
-                    val s = scrollSourceToByteString(source, formatter, withData.isDefined, withHistory, length, fieldsMask)
+                    val s = streams.scrollSourceToByteString(source, formatter, withData.isDefined, withHistory, length, fieldsMask, nbg)
                     Ok.chunked(s).as(overrideMimetype(formatter.mimetype, request)._2).withHeaders("X-CM-WELL-N" -> hits.toString)
                   }
                 }.recover(errorHandler)
@@ -687,7 +694,7 @@ callback=< [URL] >
         format match {
           case f if !Set("text", "path", "tsv", "tab", "nt", "ntriples", "nq", "nquads")(f.toLowerCase) && !f.toLowerCase.startsWith("json") => Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "not a streamable type (use 'text','tsv','ntriples', 'nquads', or any json)")))
           case FormatExtractor(formatType) => {
-            val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
+            val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
             fieldsFiltersFut.flatMap { fieldFilter =>
               fieldsMaskFut.flatMap { fieldsMask =>
                 /* RDF types allowed in mstream are: ntriples, nquads, jsonld & jsonldq
@@ -714,7 +721,7 @@ callback=< [URL] >
                   filterOutBlanks = true,
                   forceUniqueness = forceUniqueness) //cleanSystemBlanks set to true, so we won't output all the meta information we usaly output. it get's messy with streaming. we don't want each chunk to show the "document context"
 
-                cmwell.ws.Streams.superScrollSource(
+                streams.superScrollSource(nbg,
                   pathFilter = pathFilter,
                   fieldFilter = fieldFilter,
                   datesFilter = Some(DatesFilter(from, to)),
@@ -722,7 +729,7 @@ callback=< [URL] >
                   withHistory = withHistory,
                   withDeleted = withDeleted).map { case (src, hits) =>
 
-                  val s = cmwell.ws.Streams.scrollSourceToByteString(src, formatter, withData.isDefined, withHistory, length, fieldsMask)
+                  val s = streams.scrollSourceToByteString(src, formatter, withData.isDefined, withHistory, length, fieldsMask,nbg)
                   Ok.chunked(s).as(overrideMimetype(formatter.mimetype, request)._2).withHeaders("X-CM-WELL-N" -> hits.toString)
                 }
               }
@@ -750,6 +757,7 @@ callback=< [URL] >
         val length = request.getQueryString("length").flatMap(asLong)
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
         val fieldsMaskFut = extractFieldsMask(request)
+        val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
         val (withData, format) = {
           val wd = request.getQueryString("with-data")
           val frmt = request.getQueryString("format").getOrElse({
@@ -765,7 +773,7 @@ callback=< [URL] >
         format match {
           case f if !Set("text", "path", "tsv", "tab", "nt", "ntriples", "nq", "nquads")(f.toLowerCase) && !f.toLowerCase.startsWith("json") => Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "not a streamable type (use any json, or one of: 'text','tsv','ntriples', or 'nquads')")))
           case FormatExtractor(formatType) => {
-            val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
+            val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
             fieldsFiltersFut.flatMap { fieldFilter =>
               fieldsMaskFut.flatMap { fieldsMask =>
                 /* RDF types allowed in stream are: ntriples, nquads, jsonld & jsonldq
@@ -791,7 +799,7 @@ callback=< [URL] >
                   forceUniqueness = forceUniqueness)
 
 
-                cmwell.ws.Streams.scrollSource(
+                streams.scrollSource(nbg,
                   pathFilter = pathFilter,
                   fieldFilters = fieldFilter,
                   datesFilter = Some(DatesFilter(from, to)),
@@ -799,7 +807,7 @@ callback=< [URL] >
                   withHistory = withHistory,
                   withDeleted = withDeleted).map { case (src, hits) =>
 
-                  val s = cmwell.ws.Streams.scrollSourceToByteString(src, formatter, withData.isDefined, withHistory, length, fieldsMask)
+                  val s = streams.scrollSourceToByteString(src, formatter, withData.isDefined, withHistory, length, fieldsMask,nbg)
                   Ok.chunked(s).as(overrideMimetype(formatter.mimetype, request)._2).withHeaders("X-CM-WELL-N" -> hits.toString)
                 }
               }
@@ -810,11 +818,12 @@ callback=< [URL] >
     }.recover(asyncErrorHandler).get
 
   def generateSortedConsumeFieldFilters(qpOpt: Option[String],
-                                         path: String,
-                                         withDescendants: Boolean,
-                                         withHistory: Boolean,
-                                         withDeleted: Boolean,
-                                         indexTime: Long): Future[SortedConsumeState] = {
+                                        path: String,
+                                        withDescendants: Boolean,
+                                        withHistory: Boolean,
+                                        withDeleted: Boolean,
+                                        indexTime: Long,
+                                        nbg: Boolean): Future[SortedConsumeState] = {
     val pOpt = {
       if (path == "/" && withDescendants) None
       else Some(path)
@@ -823,7 +832,7 @@ callback=< [URL] >
     qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(None)) { qp =>
       FieldFilterParser.parseQueryParams(qp) match {
         case Failure(err) => Future.failed(err)
-        case Success(rff) => RawFieldFilter.eval(rff).map(Some.apply)
+        case Success(rff) => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply)
       }
     }.map { ffOpt =>
       SortedConsumeState(indexTime, pOpt, withHistory, withDeleted, withDescendants, ffOpt)
@@ -849,6 +858,7 @@ callback=< [URL] >
     val lengthHint = request.getQueryString("length-hint").flatMap(asInt).getOrElse(100)
     val normalizedPath = normalizePath(request.path)
     val qpOpt = request.getQueryString("qp")
+    val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
     //deprecated!
 //    val from = request.getQueryString("from")
 //    val to = request.getQueryString("to")
@@ -886,7 +896,8 @@ callback=< [URL] >
           withDescendants = withDescendants,
           withHistory = withHistory,
           withDeleted = withDeleted,
-          indexTime = indexTime
+          indexTime = indexTime,
+          nbg = nbg
         ).map {
           case SortedConsumeState(firstTimeStamp, path, history, deleted, descendants, fieldFilters) => {
 
@@ -903,7 +914,7 @@ callback=< [URL] >
 
             import cmwell.ws.Streams._
 
-            val src = qStream(firstTimeStamp,path,history,deleted,descendants,lengthHint,fieldFilters)
+            val src = streams.qStream(firstTimeStamp,path,history,deleted,descendants,lengthHint,fieldFilters,nbg)
 
 //            if (!withData) source.flatMapConcat(identity)
 //            //we already retry internally in IRW, but apparently, sometimes it's not enough: http://gitlab:8082/cm-well/cm-well/issues/136
@@ -915,7 +926,7 @@ callback=< [URL] >
 
             val ss: Source[ByteString,NotUsed] = {
               if (withData.isEmpty) src.via(Flows.searchThinResultToByteString(formatter))
-              else src.via(Flows.searchThinResultToFatInfoton).via(Flows.infotonToByteString(formatter))
+              else src.via(Flows.searchThinResultToFatInfoton(nbg,crudServiceFS)).via(Flows.infotonToByteString(formatter))
             }
 
             val contentType = {
@@ -966,8 +977,9 @@ callback=< [URL] >
     val withHistory = createConsumerParams.contains("with-history")
     val withDeleted = createConsumerParams.contains("with-deleted")
     val lengthHint = createConsumerParams.get("length-hint").flatMap(_.headOption.flatMap(asLong))
+    val nbg = createConsumerParams.get("nbg").flatMap(_.headOption.flatMap(asBoolean)).getOrElse(false)
     val consumeStateFut: Future[ConsumeState] = {
-      val f = generateSortedConsumeFieldFilters(qpOpt, normalizedPath, withDescendants, withHistory, withDeleted, indexTime.getOrElse(0L))
+      val f = generateSortedConsumeFieldFilters(qpOpt, normalizedPath, withDescendants, withHistory, withDeleted, indexTime.getOrElse(0L),nbg)
       lengthHint.fold[Future[ConsumeState]](f)(lh => f.map(_.asBulk(lh)))
     }
     consumeStateFut.map { scs =>
@@ -1014,6 +1026,7 @@ callback=< [URL] >
       Future.successful(BadRequest("`with-deleted` is determined in the beginning of the iteration. can't specify together with `position`"))
     else {
 
+      val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
       val sortedIteratorStateTry = ConsumeState.decode[SortedConsumeState](sortedIteratorID)
       val lengthHint = request
         .getQueryString("length-hint")
@@ -1042,7 +1055,8 @@ callback=< [URL] >
             withHistory      = history,
             withDeleted      = deleted,
             fieldSortParams  = fsp,
-            debugInfo        = debugInfo)
+            debugInfo        = debugInfo,
+            nbg              = nbg)
 
           val (contentType, formatter) = requestedFormat match {
             case FormatExtractor(formatType) =>
@@ -1101,11 +1115,12 @@ callback=< [URL] >
                   }
                 }
 
-                val scrollFuture = cmwell.ws.Streams.scrollSource(
+                val scrollFuture = streams.scrollSource(
                   pathFilter = pf,
                   fieldFilters = Some(ffs2),
                   withHistory = history,
-                  withDeleted = deleted)
+                  withDeleted = deleted,
+                  nbg = nbg)
 
                 scrollFuture.flatMap {
                   //if by pure luck, the chunk length is exactly equal to the number of infotons in cm-well containing this same indexTime
@@ -1119,7 +1134,7 @@ callback=< [URL] >
                     logger.info(s"sorted iteration encountered a large chunk [indexTime = $idxT]")
 
                     val id = ConsumeState.encode(sortedConsumeState.copy(from = idxT))
-                    val src = cmwell.ws.Streams.scrollSourceToByteString(iterationResultsEnum,formatter,withData,history,None,Set.empty) // TODO: get fieldsMask instead of Set.empty
+                    val src = streams.scrollSourceToByteString(iterationResultsEnum,formatter,withData,history,None,Set.empty,nbg) // TODO: get fieldsMask instead of Set.empty
 
                     val result = Ok.chunked(src).as(contentType).withHeaders("X-CM-WELL-POSITION" -> id, "X-CM-WELL-N-LEFT" -> (total - hits).toString)
                     Future.successful(result)
@@ -1350,11 +1365,12 @@ callback=< [URL] >
       val pathFilter = if (normalizedPath.length > 1) Some(PathFilter(normalizedPath, withDescendants)) else None
       val withHistory = request.queryString.keySet("with-history")
       val rawAggregationsFilters = AggregationsFiltersParser.parseAggregationParams(request.getQueryString("ap"))
+      val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
 
       rawAggregationsFilters match {
         case Success(raf) =>
           val apfut = Future.traverse(raf)(RawAggregationFilter.eval)
-          val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
+          val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
           fieldsFiltersFut.flatMap { fieldFilters =>
             apfut.flatMap { af =>
               crudServiceFS.aggregate(pathFilter, fieldFilters, Some(DatesFilter(from, to)), PaginationParams(offset, length), withHistory, af.flatten, debugInfo).map { aggResult =>
@@ -1409,6 +1425,7 @@ callback=< [URL] >
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
         val withHistory = queryString.keySet("with-history")
         val debugInfo = queryString.keySet("debug-info")
+        val nbg = queryString.get("nbg").flatMap(_.headOption.flatMap(asBoolean)).getOrElse(false)
         val xg = queryString.keySet("xg")
         val yg = queryString.keySet("yg")
 
@@ -1422,8 +1439,8 @@ callback=< [URL] >
         else if (!withData && (xg || (yg && getQueryString("yg").get.split('|').exists(_.trim.startsWith(">")))))
           Future.successful(BadRequest(s"you can't mix `xg` nor '>' prefixed `yg` expressions without also specifying `with-data`: it makes no sense!"))
         else {
-          val fieldSortParamsFut = RawSortParam.eval(rawSortParams)
-          val fieldsFiltersFut = qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
+          val fieldSortParamsFut = RawSortParam.eval(rawSortParams,crudServiceFS,typesCache(nbg))
+          val fieldsFiltersFut = qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
           fieldsFiltersFut.flatMap { fieldFilters =>
             fieldSortParamsFut.flatMap { fieldSortParams =>
               crudServiceFS.search(pathFilter, fieldFilters, Some(DatesFilter(from, to)),
@@ -1635,6 +1652,7 @@ callback=< [URL] >
 
   def infotonOptionToReply(request: Request[AnyContent], infoton: Option[Infoton], recursiveCalls: Int = 30, fieldsMask: Set[String] = Set.empty): Future[Result] = Try {
     val offset = request.getQueryString("offset")
+    val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
     (if(offset.isEmpty) actions.ActiveInfotonHandler.wrapInfotonReply(infoton) else infoton) match {
       case None => Future.successful(NotFound("Infoton not found"))
       case Some(DeletedInfoton(p, _, _, lm,_)) => Future.successful(NotFound(s"Infoton was deleted on ${fullDateFormatter.print(lm)}"))
@@ -1697,7 +1715,7 @@ callback=< [URL] >
             // ui
             case _ => {
               val isOldUi = request.queryString.keySet("old-ui")
-              cachedSpa.getContent(isOldUi).flatMap { markup =>
+              cachedSpa.getContent(isOldUi,nbg).flatMap { markup =>
                 if (markup eq null)
                   Future.successful(ServiceUnavailable("System initialization was not yet completed. Please try again soon."))
                 else
@@ -1796,16 +1814,16 @@ callback=< [URL] >
   def handleAuthGET(action: String) = Action.async { req =>
     action match {
       case "generatepassword" => {
-        val pw = AuthUtils.generateRandomPassword()
+        val pw = authUtils.generateRandomPassword()
         Future.successful(Ok(Json.obj(("password", JsString(pw._1)), ("encrypted", pw._2))))
       }
       case "changepassword" => {
         val currentPassword = req.getQueryString("current")
         val newPassword = req.getQueryString("new")
-        val token = AuthUtils.extractTokenFrom(req)
+        val token = authUtils.extractTokenFrom(req)
 
         if (Seq(currentPassword, newPassword, token).forall(_.isDefined)) {
-          AuthUtils.changePassword(token.get, currentPassword.get, newPassword.get).map {
+          authUtils.changePassword(token.get, currentPassword.get, newPassword.get).map {
             case true => Ok(Json.obj("success" -> true))
             case _ => Forbidden(Json.obj("error" -> "Current password does not match given token"))
           }
@@ -1821,12 +1839,13 @@ callback=< [URL] >
   val emptyBytes: Array[Byte] = Array.empty[Byte]
 
   def handleFix(req: Request[AnyContent]): Future[Result] = {
-    if (!AuthUtils.isOperationAllowedForUser(security.Overwrite, AuthUtils.extractTokenFrom(req)))
+    if (!authUtils.isOperationAllowedForUser(security.Overwrite, authUtils.extractTokenFrom(req)))
       Future.successful(Forbidden("not authorized to overwrite"))
     else if(isReactive(req)){
+      val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
       val formatter = getFormatter(req, "json")
       val parallelism = req.getQueryString("parallelism").flatMap(asInt).getOrElse(1)
-      crudServiceFS.rFix(normalizePath(req.path),parallelism).map { source =>
+      crudServiceFS.rFix(normalizePath(req.path),parallelism,nbg).map { source =>
         val s = source.map { bs =>
           val msg = if (bs._2.isEmpty) None else Some(bs._2)
           ByteString(formatter.render(SimpleResponse(bs._1, msg)), StandardCharsets.UTF_8)
@@ -1876,7 +1895,7 @@ callback=< [URL] >
   }
 
   def handleFixDc(req: Request[AnyContent]): Future[Result] = {
-    if (!AuthUtils.isOperationAllowedForUser(security.Overwrite, AuthUtils.extractTokenFrom(req)))
+    if (!authUtils.isOperationAllowedForUser(security.Overwrite, authUtils.extractTokenFrom(req)))
       Future.successful(Forbidden("not authorized to overwrite"))
     else {
       val f = crudServiceFS.fixDc(normalizePath(req.path), Settings.dataCenter)
@@ -1901,7 +1920,7 @@ callback=< [URL] >
       val p = Promise[Result]()
 
       val path = normalizePath(req.path)
-      val allowed = AuthUtils.filterNotAllowedPaths(Seq(path), PermissionLevel.Write, AuthUtils.extractTokenFrom(req)).isEmpty
+      val allowed = authUtils.filterNotAllowedPaths(Seq(path), PermissionLevel.Write, authUtils.extractTokenFrom(req)).isEmpty
       if (!allowed) {
         p.completeWith(Future.successful(Forbidden("Not authorized")))
       } else {
@@ -1925,7 +1944,7 @@ callback=< [URL] >
 
   private def handlePurge2(req: Request[AnyContent]): Future[Result] = {
     val path = normalizePath(req.path)
-    val allowed = AuthUtils.filterNotAllowedPaths(Seq(path), PermissionLevel.Write, AuthUtils.extractTokenFrom(req)).isEmpty
+    val allowed = authUtils.filterNotAllowedPaths(Seq(path), PermissionLevel.Write, authUtils.extractTokenFrom(req)).isEmpty
     if(!allowed) {
       Future.successful(Forbidden("Not authorized"))
     } else {
@@ -1934,16 +1953,6 @@ callback=< [URL] >
       crudServiceFS.purgePath2(path,limit).map{
         b => Ok(formatter.render(SimpleResponse(true,None))).as(overrideMimetype(formatter.mimetype,req)._2)
       }
-    }
-  }
-
-  def handleToggleBg() = Action { implicit req =>
-    if (!AuthUtils.isOperationAllowedForUser(security.Admin, AuthUtils.extractTokenFrom(req), evenForNonProdEnv = true)) {
-      Forbidden("Not authorized")
-    }
-    else {
-      crudServiceFS.newBG = !crudServiceFS.newBG
-        Ok("Toggled BG to " + {if(crudServiceFS.newBG) "new" else "old"} + " implementation")
     }
   }
 
@@ -1959,7 +1968,7 @@ callback=< [URL] >
 
   def handlePoisonPill() = Action { implicit req =>
 
-    if (!AuthUtils.isOperationAllowedForUser(security.Admin, AuthUtils.extractTokenFrom(req), evenForNonProdEnv = true)) {
+    if (!authUtils.isOperationAllowedForUser(security.Admin, authUtils.extractTokenFrom(req), evenForNonProdEnv = true)) {
       Forbidden("Not authorized")
     } else {
       val hostOpt = req.getQueryString("host")
@@ -1984,7 +1993,7 @@ callback=< [URL] >
   }
 
   def handleZzPost(uzid: String) = Action.async(parse.raw) { implicit req =>
-    val allowed = AuthUtils.isOperationAllowedForUser(security.Admin, AuthUtils.extractTokenFrom(req), evenForNonProdEnv = true)
+    val allowed = authUtils.isOperationAllowedForUser(security.Admin, authUtils.extractTokenFrom(req), evenForNonProdEnv = true)
     req.body.asBytes() match {
       case Some(payload) if allowed =>
         val ttl = req.getQueryString("ttl").fold(0)(_.toInt)
@@ -2089,18 +2098,20 @@ case class CMWellPostType(xCmWellType: String) {
 }
 
 @Singleton
-class CachedSpa @Inject()(implicit ec: ExecutionContext) extends LazyLogging {
+class CachedSpa @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends LazyLogging {
 
 
-  val oldCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(true))(Combiner.replacer,ec)
-  val newCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(false))(Combiner.replacer,ec)
+  val oldNbgCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(true,true))(Combiner.replacer,ec)
+  val newObgCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(false,false))(Combiner.replacer,ec)
+  val oldObgCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(true,false))(Combiner.replacer,ec)
+  val newNbgCache = new SingleElementLazyAsyncCache[String](600000)(doFetchContent(false,true))(Combiner.replacer,ec)
 
   private val contentPath = "/meta/app/index.html"
   private val newContentPath = "/meta/app/react/index.html"
 
-  private def doFetchContent(isOldUi: Boolean): Future[String] = {
+  private def doFetchContent(isOldUi: Boolean, nbg: Boolean): Future[String] = {
     val path = if(isOldUi) contentPath else newContentPath
-    CRUDServiceFS.getInfotonByPathAsync(path).collect {
+    crudServiceFS.getInfotonByPathAsync(path).collect {
       case FullBox(FileInfoton(_, _, _, _, _, Some(c),_)) => new String(c.data.get, "UTF-8")
       case somethingElse => {
         logger.error("got something else: " + somethingElse)
@@ -2109,7 +2120,13 @@ class CachedSpa @Inject()(implicit ec: ExecutionContext) extends LazyLogging {
     }
   }
 
-  def getContent(isOldUi: Boolean): Future[String] =
-    if(isOldUi) oldCache.getAndUpdateIfNeeded
-    else newCache.getAndUpdateIfNeeded
+  def getContent(isOldUi: Boolean, nbg: Boolean): Future[String] =
+    if(isOldUi) {
+      if(nbg) oldNbgCache.getAndUpdateIfNeeded
+      else oldObgCache.getAndUpdateIfNeeded
+    }
+    else {
+      if(nbg) newNbgCache.getAndUpdateIfNeeded
+      else newObgCache.getAndUpdateIfNeeded
+    }
 }

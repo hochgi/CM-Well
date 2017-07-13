@@ -16,20 +16,16 @@
 
 package wsutil
 
-import java.util.concurrent.atomic.AtomicBoolean
-
 import cmwell.domain.{FReference, FString}
-import cmwell.fts.{Settings => _, _}
+import cmwell.fts._
 import cmwell.util.concurrent.retry
 import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.web.ld.exceptions.{PrefixAmbiguityException, UnretrievableIdentifierException}
-import cmwell.ws.Settings
 import cmwell.ws.util.PrefixRequirement
 import com.typesafe.scalalogging.LazyLogging
 import cmwell.syntaxutils._
 import ld.cmw.PassiveFieldTypesCache
 import logic.CRUDServiceFS
-
 import scala.concurrent.{ExecutionContext, Future, Promise, duration}
 import ExecutionContext.Implicits.global
 import duration.DurationInt
@@ -47,8 +43,8 @@ sealed trait FieldKey {
 sealed trait ResolvedFieldKey extends FieldKey {
   def firstLast: Future[(String,String)]
 }
-case class URIFieldKey(uri: String, namespaceUri: (String) => Try[String]) extends ResolvedFieldKey {
-  override lazy val firstLast = retry(7,1.seconds)(Future.fromTry(namespaceUri(uri)))
+case class URIFieldKey(uri: String) extends ResolvedFieldKey {
+  override lazy val firstLast = retry(7,1.seconds)(Future.fromTry(FieldKey.namespaceUri(uri)))
 //  override lazy val internalKey = {
 //    val p = Promise[String]()
 //    firstLast.onComplete {
@@ -67,8 +63,8 @@ case class URIFieldKey(uri: String, namespaceUri: (String) => Try[String]) exten
     case (f,l) => s"/meta/ns/$l/$f"
   }
 }
-case class PrefixFieldKey(first: String,prefix: String, resolvePrefix: (String,String) => Future[(String,String)]) extends ResolvedFieldKey {
-  override lazy val firstLast = retry(7,1.seconds)(resolvePrefix(first,prefix))
+case class PrefixFieldKey(first: String,prefix: String) extends ResolvedFieldKey {
+  override lazy val firstLast = retry(7,1.seconds)(FieldKey.resolvePrefix(first,prefix))
 //  override lazy val internalKey = {
 //    val p = Promise[String]()
 //    firstLast.onComplete {
@@ -118,9 +114,9 @@ case class RawMultiFieldFilter(override val fieldOperator: FieldOperator = Must,
 object RawFieldFilter {
   private[this] val bo1 = scala.collection.breakOut[Seq[RawFieldFilter],FieldFilter,Vector[FieldFilter]]
   private[this] val bo2 = scala.collection.breakOut[Set[String],FieldFilter,Vector[FieldFilter]]
-  def eval(rff: RawFieldFilter)(implicit ec: ExecutionContext): Future[FieldFilter] = rff match {
-    case RawMultiFieldFilter(fo,rs) => Future.traverse(rs)(eval)(bo1,ec).map(MultiFieldFilter(fo, _))
-    case RawSingleFieldFilter(fo,vo,fk,v) => FieldKey.eval(fk).map{
+  def eval(rff: RawFieldFilter, cache: PassiveFieldTypesCache)(implicit ec: ExecutionContext): Future[FieldFilter] = rff match {
+    case RawMultiFieldFilter(fo,rs) => Future.traverse(rs)(eval(_,cache))(bo1,ec).map(MultiFieldFilter(fo, _))
+    case RawSingleFieldFilter(fo,vo,fk,v) => FieldKey.eval(fk,cache).map{
       case s if s.isEmpty => !!!
       case s if s.size == 1 => mkSingleFieldFilter(fo,vo,s.head,v)
       case s => MultiFieldFilter(fo,s.map(mkSingleFieldFilter(Should,vo,_,v))(bo2))
@@ -139,12 +135,8 @@ sealed trait RawSortParam
 case class RawFieldSortParam(rawFieldSortParam: List[RawSortParam.RawFieldSortParam]) extends RawSortParam
 case object RawNullSortParam extends RawSortParam
 
-abstract class RawSortParam extends LazyLogging {
+object RawSortParam extends LazyLogging {
   type RawFieldSortParam = (FieldKey, FieldSortOrder)
-
-  def crudServiceFS: CRUDServiceFS
-  def fieldKeyHandler: FieldKeyHandler
-  def nbg: Boolean
 
   val empty = RawFieldSortParam(Nil)
   private[this] val bo = scala.collection.breakOut[Set[String],SortParam.FieldSortParam,List[SortParam.FieldSortParam]]
@@ -152,16 +144,16 @@ abstract class RawSortParam extends LazyLogging {
 //  private[this] val indexedFieldsNamesCache =
 //    new SingleElementLazyAsyncCache[Set[String]](Settings.fieldsNamesCacheTimeout.toMillis,Set.empty)(CRUDServiceFS.ftsService.getMappings(withHistory = true))(scala.concurrent.ExecutionContext.Implicits.global)
 
-  def eval(rsps: RawSortParam)(implicit ec: ExecutionContext): Future[SortParam] = rsps match {
+  def eval(rsps: RawSortParam, crudServiceFS: CRUDServiceFS, cache: PassiveFieldTypesCache)(implicit ec: ExecutionContext): Future[SortParam] = rsps match {
     case RawNullSortParam => Future.successful(NullSortParam)
     case RawFieldSortParam(rfsp) => {
 
-      val indexedFieldsNamesFut = crudServiceFS.ESMappingsCache(nbg).getAndUpdateIfNeeded
+      val indexedFieldsNamesFut = crudServiceFS.ESMappingsCache(cache.nbg).getAndUpdateIfNeeded
 
       Future.traverse(rfsp) {
-        case (fk, ord) => fieldKeyHandler.eval(fk)(ec).map(_.map(_ -> ord)(bo))
+        case (fk, ord) => FieldKey.eval(fk,cache).map(_.map(_ -> ord)(bo))
         // following code could gives precedence to mangled fields over unmangled ones
-      }.flatMap(pairs => indexedFieldsNamesFut.map{
+      }.flatMap(pairs => indexedFieldsNamesFut.map {
         indexedFieldsNamesWithTypeConcatenation => {
           val indexedFieldsNames = indexedFieldsNamesWithTypeConcatenation.map(_.takeWhile(':'.!=))
           FieldSortParams(pairs.foldRight(List.empty[SortParam.FieldSortParam]) {
@@ -193,13 +185,9 @@ abstract class RawSortParam extends LazyLogging {
   }
 }
 
-
-
-abstract class FieldKeyHandler extends LazyLogging with PrefixRequirement {
+object FieldKey extends LazyLogging with PrefixRequirement {
   
-  def cache: PassiveFieldTypesCache
-  
-  def eval(fieldKey: FieldKey)(implicit ec: ExecutionContext): Future[Set[String]] = fieldKey match {
+  def eval(fieldKey: FieldKey, cache: PassiveFieldTypesCache)(implicit ec: ExecutionContext): Future[Set[String]] = fieldKey match {
     case NnFieldKey(key) if key.startsWith("system.") || key.startsWith("content.") || key.startsWith("link.")  => Future.successful(Set(key))
     case _ => cache.get(fieldKey).flatMap(set => fieldKey.internalKey.map{ key => set.collect{ case c if c!='s' => s"$c$$$key" } + key})
   }

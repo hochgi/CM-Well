@@ -16,6 +16,8 @@
 
 package security
 
+import javax.inject.Inject
+
 import cmwell.domain.{FieldValue, FileContent, FileInfoton, Infoton}
 import cmwell.ws.Settings
 import com.github.t3hnar.bcrypt._
@@ -28,17 +30,17 @@ import scala.concurrent.Future
 import scala.language.postfixOps
 import scala.util.Random
 
-object AuthUtils {
+class AuthUtils @Inject()(authCache: AuthCache, crudServiceFS: CRUDServiceFS) {
   def changePassword(token: Token, currentPw: String, newPw: String): Future[Boolean] = {
     if(!token.isValid) {
       Future.successful(false)
     } else {
-      AuthCache.getUserInfoton(token.username) match {
+      authCache.getUserInfoton(token.username) match {
         case Some(user) if Authentication.passwordMatches(user, currentPw) => {
           val digestValue = newPw.bcrypt(generateSalt)
           val digest2Value = cmwell.util.string.Hash.md5(s"${token.username}:cmwell:$newPw")
           val newUserInfoton = user.as[JsObject] ++ JsObject(Seq("digest" -> JsString(digestValue), "digest2" -> JsString(digest2Value)))
-          CRUDServiceFS.putInfoton(FileInfoton(s"/meta/auth/users/${token.username}", Settings.dataCenter, None, Map.empty[String, Set[FieldValue]], FileContent(newUserInfoton.toString.getBytes, "application/json")))
+          crudServiceFS.putInfoton(FileInfoton(s"/meta/auth/users/${token.username}", Settings.dataCenter, None, Map.empty[String, Set[FieldValue]], FileContent(newUserInfoton.toString.getBytes, "application/json")))
         }
         case _ => Future.successful(false)
       }
@@ -69,7 +71,7 @@ object AuthUtils {
 
     tokenOpt match {
       case Some(token) if token.isValid => {
-        AuthCache.getUserInfoton(token.username) match {
+        authCache.getUserInfoton(token.username) match {
           case Some(user) => paths.filterNot(path => Authorization.isAllowedForUser((path, level), user))
           case None if token.username == "root" || token.username == "pUser" => Seq() // special case only required for cases when CRUD is not yet ready
           case None => paths
@@ -108,6 +110,6 @@ object AuthUtils {
   }
 
   private def getUser(tokenOpt: Option[Token]) =
-    tokenOpt.collect{ case token if token.isValid => AuthCache.getUserInfoton(token.username) }.flatten
+    tokenOpt.collect{ case token if token.isValid => authCache.getUserInfoton(token.username) }.flatten
 
 }

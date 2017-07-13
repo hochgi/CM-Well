@@ -15,6 +15,8 @@
 
 package security
 
+import javax.inject._
+
 import cmwell.domain.{Everything, FileInfoton}
 import cmwell.ws.Settings
 import cmwell.zcache.L1Cache
@@ -27,10 +29,8 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.util.Try
 
-/**
-  * Created by yaakov on 1/20/15.
-  */
-object AuthCache extends LazyLogging {
+@Singleton
+class AuthCache @Inject()(crudServiceFS: CRUDServiceFS) extends LazyLogging {
   private val usersFolder = "/meta/auth/users"
   private val rolesFolder = "/meta/auth/roles"
 
@@ -45,7 +45,7 @@ object AuthCache extends LazyLogging {
   private def getUserFromCas(username: String) = getFromCrudAndExtractJson(s"$usersFolder/$username")
   private def getRoleFromCas(rolename: String) = getFromCrudAndExtractJson(s"$rolesFolder/$rolename")
 
-  private def getFromCrudAndExtractJson(infotonPath: String) = CRUDServiceFS.getInfoton(infotonPath, None, None).map {
+  private def getFromCrudAndExtractJson(infotonPath: String) = crudServiceFS.getInfoton(infotonPath, None, None).map {
     case Some(Everything(FileInfoton(_,_,_,_,_,Some(c),_))) =>
       Some(Json.parse(new String(c.data.get, "UTF-8")))
     case other =>

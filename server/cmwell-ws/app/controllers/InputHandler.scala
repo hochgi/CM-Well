@@ -28,14 +28,14 @@ import cmwell.web.ld.exceptions.UnretrievableIdentifierException
 import cmwell.web.ld.util.LDFormatParser.ParsingResponse
 import cmwell.web.ld.util._
 import cmwell.ws.Settings
-import cmwell.ws.util.FieldKeyParser
+import cmwell.ws.util.{FieldKeyParser, TypeHelpers}
 import com.typesafe.scalalogging.LazyLogging
 import logic.{CRUDServiceFS, InfotonValidator}
 import play.api.libs.json._
 import play.api.mvc._
 import security.{AuthUtils, PermissionLevel}
 import wsutil._
-import ld.cmw.PassiveFieldTypesCache
+import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache, PassiveFieldTypesCache}
 import org.joda.time.{DateTime, DateTimeZone}
 import javax.inject._
 
@@ -46,10 +46,38 @@ import scala.language.postfixOps
 import scala.util._
 
 @Singleton
-class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CRUDServiceFS) extends Controller with LazyLogging {
+class InputHandler @Inject() (ingestPushback: IngestPushback,
+                              crudServiceFS: CRUDServiceFS,
+                              nCache: NbgPassiveFieldTypesCache,
+                              oCache: ObgPassiveFieldTypesCache,
+                              tbg: NbgToggler,
+                              authUtils: AuthUtils) extends Controller with LazyLogging with TypeHelpers {
 
   val bo1 = collection.breakOut[List[Infoton],String,Set[String]]
   val bo2 = collection.breakOut[Vector[Infoton],String,Set[String]]
+
+//  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
+//  def typesCache(req: Request[_]) = if(req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false) || tbg.get) nCache else oCache
+
+  object aggregateBothOldAndNewTypesCaches {
+    def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = {
+      val fo = oCache.get(fieldKey, forceUpdateForType)
+      val fn = nCache.get(fieldKey, forceUpdateForType)
+      for {
+        o <- fo
+        n <- fn
+      } yield o union n
+    }
+
+    def update(fieldKey: FieldKey, types: Set[Char])(implicit ec: ExecutionContext): Future[Unit] = {
+      val fo = oCache.update(fieldKey, types)
+      val fn = nCache.update(fieldKey, types)
+      for {
+        o <- fo
+        n <- fn
+      } yield ()
+    }
+  }
 
   /**
    *
@@ -74,8 +102,8 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CR
   }
 
   def handlePostForDCOverwrites =  ingestPushback.async(parse.raw) { implicit req =>
-    val tokenOpt = AuthUtils.extractTokenFrom(req)
-    if (!AuthUtils.isOperationAllowedForUser(security.Overwrite, tokenOpt, evenForNonProdEnv = true))
+    val tokenOpt = authUtils.extractTokenFrom(req)
+    if (!authUtils.isOperationAllowedForUser(security.Overwrite, tokenOpt, evenForNonProdEnv = true))
       Future.successful(Forbidden("not authorized"))
     else {
       Try {
@@ -155,8 +183,8 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CR
     }
 
     req.getQueryString("format") match {
-      case Some(f) => handleFormatByFormatParameter(bais, Some(List[String](f)), req.contentType, AuthUtils.extractTokenFrom(req), skipValidation, isOverwrite)
-      case None => handleFormatByContentType(bais, req.contentType, AuthUtils.extractTokenFrom(req), skipValidation, isOverwrite)
+      case Some(f) => handleFormatByFormatParameter(bais, Some(List[String](f)), req.contentType, authUtils.extractTokenFrom(req), skipValidation, isOverwrite)
+      case None => handleFormatByContentType(bais, req.contentType, authUtils.extractTokenFrom(req), skipValidation, isOverwrite)
     }
   }
 
@@ -167,7 +195,7 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CR
     def getMetaFields(fields: Map[DirectFieldKey, Set[FieldValue]]) = collector(fields) {
       case (fk, fvs) => {
         val newTypes = fvs.map(FieldValue.prefixByType)
-        PassiveFieldTypesCache.get(fk,Some(newTypes)).flatMap { types =>
+        aggregateBothOldAndNewTypesCaches.get(fk,Some(newTypes)).flatMap { types =>
           val chars = newTypes diff types
           if (chars.isEmpty) Future.successful(None)
           else {
@@ -177,7 +205,7 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CR
                 "though you should be aware this may result in permanent system-wide performance downgrade " +
                 "related to all the enhanced fields you supply when using `force`. " +
                 s"(failed for field: ${fk.externalKey} and type/s: [${chars.mkString(",")}] out of infotons: [${allInfotons.keySet.mkString(",")}])")
-            PassiveFieldTypesCache.update(fk, chars).map { _ =>
+            aggregateBothOldAndNewTypesCaches.update(fk, chars).map { _ =>
               Some(infotonFromMaps(
                 Set.empty,
                 fk.infoPath,
@@ -413,7 +441,7 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CR
           vec match {
             case Some(v) => {
               if (skipValidation || v.forall(i => InfotonValidator.isInfotonNameValid(normalizePath(i.path)))) {
-                val unauthorizedPaths = AuthUtils.filterNotAllowedPaths(v.map(_.path), PermissionLevel.Write, AuthUtils.extractTokenFrom(req))
+                val unauthorizedPaths = authUtils.filterNotAllowedPaths(v.map(_.path), PermissionLevel.Write, authUtils.extractTokenFrom(req))
                 if(unauthorizedPaths.isEmpty) {
                   Try(v.foreach{ i => if(i.fields.isDefined) InfotonValidator.validateValueSize(i.fields.get)}) match {
                     case Success(_) => {
