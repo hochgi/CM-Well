@@ -16,23 +16,30 @@
 
 package ld.cmw
 
-import akka.actor.{Cancellable, ActorRef, Actor}
+import javax.inject._
+
+import akka.actor.{Actor, ActorRef, Cancellable}
 import akka.pattern._
-import cmwell.domain.{Infoton, FString}
+import cmwell.domain.{FString, Infoton}
 import cmwell.util.concurrent._
 import com.google.common.cache.{Cache, CacheBuilder}
 import com.typesafe.scalalogging.LazyLogging
 import k.grid.Grid
 import logic.CRUDServiceFS
-import wsutil.{NnFieldKey, FieldKey}
+import wsutil.{FieldKey, NnFieldKey}
+
 import scala.collection.generic.CanBuildFrom
 import scala.collection.mutable.{Set => MSet}
 import scala.collection.parallel.mutable
 import scala.concurrent.duration._
-import scala.concurrent.{Promise, Future, ExecutionContext}
-import scala.util.{Try, Failure, Success}
+import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.util.{Failure, Success, Try}
 
-object PassiveFieldTypesCache extends LazyLogging {
+
+abstract class PassiveFieldTypesCache { this: LazyLogging =>
+
+  def crudServiceFS: CRUDServiceFS
+  def nbg: Boolean
 
   // TODO: indexTime based search for changes since last change
   // TODO: instead of checking a `FieldKey` for `NnFieldKey(k) if k.startsWith("system.")` maybe it is better to add `SysFieldKey` ???
@@ -217,7 +224,13 @@ object PassiveFieldTypesCache extends LazyLogging {
     }
 
     private def getMetaFieldInfoton(field: FieldKey): Future[Option[Infoton]] = field.metaPath.flatMap { path =>
-      CRUDServiceFS.getInfoton(path, None, None).map(_.map(_.infoton))(updatingExecutionContext)
+      crudServiceFS.getInfoton(path, None, None, nbg).map(_.map(_.infoton))(updatingExecutionContext)
     }(updatingExecutionContext)
   }
 }
+
+@Singleton
+class NbgPassiveFieldTypesCache @Inject()(override val crudServiceFS: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging { override val nbg = true }
+
+@Singleton
+class ObgPassiveFieldTypesCache @Inject()(override val crudServiceFS: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging { override val nbg = false }

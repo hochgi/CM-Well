@@ -43,7 +43,7 @@ import scala.math.min
 import wsutil._
 
 @Singleton
-class BulkScrollHandler  @Inject() extends play.api.mvc.Controller with LazyLogging {
+class BulkScrollHandler  @Inject()(crudServiceFS: CRUDServiceFS) extends play.api.mvc.Controller with LazyLogging {
 
   //consts
   val paginationParamsForSingleResult = PaginationParams(0, 1)
@@ -97,7 +97,7 @@ class BulkScrollHandler  @Inject() extends play.api.mvc.Controller with LazyLogg
 
     def toSeed: Future[Long] = {
       val ffs = fieldsFiltersforSortedSearchFromTimeAndOptionalFilters(from,ffsOpt)
-      CRUDServiceFS.thinSearch(
+      crudServiceFS.thinSearch(
           pathFilter = pf,
           fieldFilters = Option(ffs),
           paginationParams = paginationParamsForSingleResultWithOffset,
@@ -118,7 +118,7 @@ class BulkScrollHandler  @Inject() extends play.api.mvc.Controller with LazyLogg
         val ffs = fieldsFiltersFromTimeframeAndOptionalFilters(from, to, ffsOpt)
 
         // find number of infotons in given range
-        CRUDServiceFS.thinSearch(
+        crudServiceFS.thinSearch(
           pathFilter = pf,
           fieldFilters = Option(ffs),
           paginationParams = paginationParamsForSingleResult,
@@ -188,7 +188,7 @@ class BulkScrollHandler  @Inject() extends play.api.mvc.Controller with LazyLogg
     val futureMarksTheTimeOut = cmwell.util.concurrent.SimpleScheduler.schedule(cmwell.ws.Settings.consumeBulkBinarySearchTimeout)(())
     val pf = createPathFilter(path, recursive)
     if(from == 0) {
-      CRUDServiceFS.thinSearch(
+      crudServiceFS.thinSearch(
           pathFilter = pf,
           fieldFilters = ff,
           paginationParams = paginationParamsForSingleResult,

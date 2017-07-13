@@ -50,7 +50,7 @@ object BgMonitoring {
 }
 
 @Singleton
-class ActiveInfotonGenerator @Inject() (backPressureToggler: controllers.BackPressureToggler) extends LazyLogging {
+class ActiveInfotonGenerator @Inject() (backPressureToggler: controllers.BackPressureToggler, crudServiceFS: CRUDServiceFS) extends LazyLogging {
 
   import BgMonitoring.{monitor => bgMonitor}
 
@@ -62,7 +62,7 @@ class ActiveInfotonGenerator @Inject() (backPressureToggler: controllers.BackPre
     val esColor = Try(Await.result(DashBoard.getElasticsearchStatus(), esTimeout)._1.toString).getOrElse("grey")
     Some(Map[String,Set[FieldValue]](
       "pbp" -> Set(FString(backPressureToggler.get)),
-      "nbg" -> Set(FBoolean(CRUDServiceFS.newBG)),
+      "nbg" -> Set(FBoolean(crudServiceFS.newBG)),
       "search_contexts_limit" -> Set(FLong(Settings.maxSearchContexts)),
       "cm-well_release" -> Set(FString(BuildInfo.release)),
       "cm-well_version" -> Set(FString(BuildInfo.version)),
@@ -580,7 +580,7 @@ ${
 
 
   def generateIteratorMarkdown: String = {
-    val hostsToSessions = CRUDServiceFS.countSearchOpenContexts()
+    val hostsToSessions = crudServiceFS.countSearchOpenContexts()
     val lines = hostsToSessions.map{
       case (host,sessions) => s"|$host|$sessions|"
     } :+ s"| **Total** | ${(0L /: hostsToSessions){case (sum,(_,add)) => sum + add}} |"
@@ -597,11 +597,11 @@ ${lines.mkString("\n")}
   import scala.language.implicitConversions
 
 
-  def generateInfoton(host: String, path: String, md: DateTime = new DateTime(), length: Int = 0, offset: Int = 0, isRoot : Boolean = false): Future[Option[VirtualInfoton]] = {
+  def generateInfoton(host: String, path: String, md: DateTime = new DateTime(), length: Int = 0, offset: Int = 0, isRoot : Boolean = false, nbg: Boolean = false): Future[Option[VirtualInfoton]] = {
 
     implicit def iOptAsFuture(iOpt: Option[VirtualInfoton]): Future[Option[VirtualInfoton]] = Future.successful(iOpt)
 
-    def compoundDC = CRUDServiceFS.getListOfDC().map{
+    def compoundDC = crudServiceFS.getListOfDC().map{
       seq => {
         val dcKids: Seq[Infoton] = seq.map(dc => VirtualInfoton(ObjectInfoton(s"/proc/dc/$dc", dc, None, md, None)).getInfoton)
         Some(VirtualInfoton(CompoundInfoton("/proc/dc",dc,None,md,None,dcKids.slice(offset,offset+length),offset,length,dcKids.size)))
@@ -612,8 +612,8 @@ ${lines.mkString("\n")}
       case "/proc" => {val pk = procKids; Some(VirtualInfoton(CompoundInfoton(path, dc, None, md,None,pk.slice(offset,offset+length),offset,min(pk.drop(offset).size,length),pk.size)))}
       case "/proc/node" => Some(VirtualInfoton(ObjectInfoton(path, dc, None, md,nodeValFields)))
       case "/proc/dc" => compoundDC
-      case path if path.startsWith("/proc/dc/") => CRUDServiceFS.getLastIndexTimeFor(path.drop("/proc/dc/".length))
-      case "/proc/fields" => CRUDServiceFS.getESFieldsVInfoton.map(Some.apply)
+      case path if path.startsWith("/proc/dc/") => crudServiceFS.getLastIndexTimeFor(path.drop("/proc/dc/".length))
+      case "/proc/fields" => crudServiceFS.getESFieldsVInfoton(nbg).map(Some.apply)
       case "/proc/health" => Some(VirtualInfoton(ObjectInfoton(path, dc, None, md, generateHealthFields)))
       case "/proc/health.md" => Some(VirtualInfoton(FileInfoton(path, dc, None, content = Some(FileContent(generateHealthMarkdown.getBytes, "text/x-markdown")))))
       case "/proc/health-detailed" => Some(VirtualInfoton(ObjectInfoton(path, dc, None, md, generateHealthDetailedFields)))

@@ -27,9 +27,13 @@ import cmwell.ws.Settings
 import cmwell.ws.util.PrefixRequirement
 import com.typesafe.scalalogging.LazyLogging
 import cmwell.syntaxutils._
+import ld.cmw.PassiveFieldTypesCache
 import logic.CRUDServiceFS
-import scala.concurrent.{Promise, ExecutionContext, Future, duration}, ExecutionContext.Implicits.global , duration.DurationInt
-import scala.util.{Success, Failure, Try}
+
+import scala.concurrent.{ExecutionContext, Future, Promise, duration}
+import ExecutionContext.Implicits.global
+import duration.DurationInt
+import scala.util.{Failure, Success, Try}
 
 sealed trait RawFieldFilter {
   def fieldOperator: FieldOperator
@@ -43,8 +47,8 @@ sealed trait FieldKey {
 sealed trait ResolvedFieldKey extends FieldKey {
   def firstLast: Future[(String,String)]
 }
-case class URIFieldKey(uri: String) extends ResolvedFieldKey {
-  override lazy val firstLast = retry(7,1.seconds)(Future.fromTry(FieldKey.namespaceUri(uri)))
+case class URIFieldKey(uri: String, namespaceUri: (String) => Try[String]) extends ResolvedFieldKey {
+  override lazy val firstLast = retry(7,1.seconds)(Future.fromTry(namespaceUri(uri)))
 //  override lazy val internalKey = {
 //    val p = Promise[String]()
 //    firstLast.onComplete {
@@ -63,8 +67,8 @@ case class URIFieldKey(uri: String) extends ResolvedFieldKey {
     case (f,l) => s"/meta/ns/$l/$f"
   }
 }
-case class PrefixFieldKey(first: String,prefix: String) extends ResolvedFieldKey {
-  override lazy val firstLast = retry(7,1.seconds)(FieldKey.resolvePrefix(first,prefix))
+case class PrefixFieldKey(first: String,prefix: String, resolvePrefix: (String,String) => Future[(String,String)]) extends ResolvedFieldKey {
+  override lazy val firstLast = retry(7,1.seconds)(resolvePrefix(first,prefix))
 //  override lazy val internalKey = {
 //    val p = Promise[String]()
 //    firstLast.onComplete {
@@ -135,8 +139,12 @@ sealed trait RawSortParam
 case class RawFieldSortParam(rawFieldSortParam: List[RawSortParam.RawFieldSortParam]) extends RawSortParam
 case object RawNullSortParam extends RawSortParam
 
-object RawSortParam extends LazyLogging {
+abstract class RawSortParam extends LazyLogging {
   type RawFieldSortParam = (FieldKey, FieldSortOrder)
+
+  def crudServiceFS: CRUDServiceFS
+  def fieldKeyHandler: FieldKeyHandler
+  def nbg: Boolean
 
   val empty = RawFieldSortParam(Nil)
   private[this] val bo = scala.collection.breakOut[Set[String],SortParam.FieldSortParam,List[SortParam.FieldSortParam]]
@@ -148,10 +156,10 @@ object RawSortParam extends LazyLogging {
     case RawNullSortParam => Future.successful(NullSortParam)
     case RawFieldSortParam(rfsp) => {
 
-      val indexedFieldsNamesFut = CRUDServiceFS.ESMappingsCache.getAndUpdateIfNeeded
+      val indexedFieldsNamesFut = crudServiceFS.ESMappingsCache(nbg).getAndUpdateIfNeeded
 
       Future.traverse(rfsp) {
-        case (fk, ord) => FieldKey.eval(fk).map(_.map(_ -> ord)(bo))
+        case (fk, ord) => fieldKeyHandler.eval(fk)(ec).map(_.map(_ -> ord)(bo))
         // following code could gives precedence to mangled fields over unmangled ones
       }.flatMap(pairs => indexedFieldsNamesFut.map{
         indexedFieldsNamesWithTypeConcatenation => {
@@ -185,9 +193,11 @@ object RawSortParam extends LazyLogging {
   }
 }
 
-object FieldKey extends LazyLogging with PrefixRequirement {
+
+
+abstract class FieldKeyHandler extends LazyLogging with PrefixRequirement {
   
-  import ld.cmw.{PassiveFieldTypesCache => cache}
+  def cache: PassiveFieldTypesCache
   
   def eval(fieldKey: FieldKey)(implicit ec: ExecutionContext): Future[Set[String]] = fieldKey match {
     case NnFieldKey(key) if key.startsWith("system.") || key.startsWith("content.") || key.startsWith("link.")  => Future.successful(Set(key))

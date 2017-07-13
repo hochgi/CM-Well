@@ -74,10 +74,10 @@ object ApplicationUtils {
     * @param path
     * @return
     */
-  def infotonPathDeletionAllowed(path: String, recursive: Boolean): Future[Either[String, Seq[String]]] = {
+  def infotonPathDeletionAllowed(path: String, recursive: Boolean, crudServiceFS: CRUDServiceFS, nbg: Boolean): Future[Either[String, Seq[String]]] = {
     def numOfChildren(p: String): Future[SearchResults] = {
       val pathFilter = if (p.length > 1) Some(PathFilter(p, true)) else None
-      CRUDServiceFS.search(pathFilter, None, Some(DatesFilter(None, None)), PaginationParams(0, 500), false, false, SortParam.empty)
+      crudServiceFS.search(pathFilter, None, Some(DatesFilter(None, None)), PaginationParams(0, 500), false, false, SortParam.empty, false, false, nbg)
     }
 
     if (!InfotonValidator.isInfotonNameValid(path)) Future.successful {
@@ -100,7 +100,7 @@ object ApplicationUtils {
 }
 
 @Singleton
-class Application @Inject()(bulkScrollHandler: BulkScrollHandler, activeInfotonGenerator: ActiveInfotonGenerator, cachedSpa: CachedSpa) extends Controller with FileInfotonCaching with LazyLogging {
+class Application @Inject()(bulkScrollHandler: BulkScrollHandler, activeInfotonGenerator: ActiveInfotonGenerator, cachedSpa: CachedSpa, crudServiceFS: CRUDServiceFS) extends Controller with FileInfotonCaching with LazyLogging {
 
   import ApplicationUtils._
 
@@ -178,7 +178,7 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler, activeInfotonG
                   req.queryString.get("callback").flatMap(_.headOption)
                 )
 
-                val f = CRUDServiceFS.getInfotonsByPathOrUuid(uuids = d.data).map { bag =>
+                val f = crudServiceFS.getInfotonsByPathOrUuid(uuids = d.data).map { bag =>
                   val data = ByteString(bag.infotons.map(i => formatter.render(i.masked(fieldsMask))).mkString("", "\n", "\n"), StandardCharsets.UTF_8)
                   Some(subscription -> data)
                 }
@@ -251,7 +251,7 @@ callback=< [URL] >
         uuid =>
           logger.info(s"Sending $uuid to $url.")
       }
-      val infotonsFut = CRUDServiceFS.getInfotonsByPathOrUuid(uuids = uuids.toVector)
+      val infotonsFut = crudServiceFS.getInfotonsByPathOrUuid(uuids = uuids.toVector)
       //TODO: probably not the best host to provide a formatter. is there a way to get the original host the subscription was asked from?
       val formatter = FormatterManager.getFormatter(format, s"http://${cmwell.util.os.Props.machineName}:9000")
       val futureRes = infotonsFut.flatMap { bag =>
@@ -301,13 +301,14 @@ callback=< [URL] >
     // todo: fix this.. should check that the token is valid...
     val tokenOpt = AuthUtils.extractTokenFrom(req)
     val isRoot = AuthUtils.isValidatedAs(tokenOpt, "root")
+    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
 
     val length = req.getQueryString("length").flatMap(asInt).getOrElse(if (req.getQueryString("format").isEmpty) 13 else 0) // default is 0 unless 1st request for the ajax app
     val offset = req.getQueryString("offset").flatMap(asInt).getOrElse(0)
     //    infotonOptionToReply(req,ActiveInfotonGenerator.generateInfoton(req.host, path, new DateTime(),length,offset))
 
     activeInfotonGenerator
-      .generateInfoton(req.host, path, new DateTime(), length, offset, isRoot)
+      .generateInfoton(req.host, path, new DateTime(), length, offset, isRoot, nbg)
       .flatMap(iOpt => infotonOptionToReply(req, iOpt.map(VirtualInfoton.v2i)))
   }.recover(asyncErrorHandler).get
 
@@ -327,21 +328,21 @@ callback=< [URL] >
       req.getQueryString("op") match {
         case _ if !allowed => Future.successful(Forbidden("Not allowed to use zz"))
         case Some("purge") =>
-          mapToResp(CRUDServiceFS.zStore.remove(key))
+          mapToResp(crudServiceFS.zStore.remove(key))
         case Some("list") =>
           (req.getQueryString("limit") match {
-            case Some(limit) => CRUDServiceFS.zStore.ls(limit.toInt)
-            case None => CRUDServiceFS.zStore.ls()
+            case Some(limit) => crudServiceFS.zStore.ls(limit.toInt)
+            case None => crudServiceFS.zStore.ls()
           }).map(lsRes => Ok(lsRes.mkString("\n")))
         case Some("put") =>
           val value = req.getQueryString("payload").getOrElse("").getBytes("UTF-8")
           mapToResp(req.getQueryString("ttl") match {
-            case Some(ttl) => CRUDServiceFS.zStore.put(key, value, ttl.toInt, false)
-            case None => CRUDServiceFS.zStore.put(key, value)
+            case Some(ttl) => crudServiceFS.zStore.put(key, value, ttl.toInt, false)
+            case None => crudServiceFS.zStore.put(key, value)
           })
         case None =>
           val p = Promise[Result]
-          CRUDServiceFS.zStore.get(key).onComplete {
+          crudServiceFS.zStore.get(key).onComplete {
             case Success(payload) => p.success(Ok(
               if (req.getQueryString("format").contains("text")) new String(payload, "UTF-8")
               else payload.mkString(",")
@@ -361,24 +362,25 @@ callback=< [URL] >
       def allowed(infoton: Infoton, level: PermissionLevel = PermissionLevel.Read) = AuthUtils.filterNotAllowedPaths(Seq(infoton.path), level, AuthUtils.extractTokenFrom(req)).isEmpty
       val isPurgeOp = req.getQueryString("op").contains("purge")
       def fields = req.getQueryString("fields").map(FieldNameConverter.toActualFieldNames)
+      val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
 
       if (!uuid.matches("^[a-f0-9]{32}$"))
         Future.successful(BadRequest("not a valid uuid format"))
       else {
-        CRUDServiceFS.getInfotonByUuidAsync(uuid).flatMap {
+        crudServiceFS.getInfotonByUuidAsync(uuid).flatMap {
           case FullBox(infoton) if isPurgeOp && allowed(infoton, PermissionLevel.Write) =>
             val formatter = getFormatter(req, "json")
 
             req.getQueryString("index") match {
               case Some(index) =>
-                CRUDServiceFS.purgeUuidFromIndex(uuid,index).map( _ =>
+                crudServiceFS.purgeUuidFromIndex(uuid,index,nbg).map(_ =>
                   Ok(formatter.render(SimpleResponse(success = true, Some(s"Note: $uuid was only purged from $index but not from CAS!")))).as(overrideMimetype(formatter.mimetype, req)._2)
                 )
               case None =>
-                CRUDServiceFS.getInfotons(Seq(infoton.path)).flatMap { boi =>
+                crudServiceFS.getInfotons(Seq(infoton.path),nbg).flatMap { boi =>
                   if (infoton.uuid == boi.infotons.head.uuid) Future.successful(BadRequest("This specific version of CM-Well does not support this operation for the last version of the Infoton."))
                   else {
-                    CRUDServiceFS.purgeUuid(infoton).map { _ =>
+                    crudServiceFS.purgeUuid(infoton).map { _ =>
                       Ok(formatter.render(SimpleResponse(success = true, None))).as(overrideMimetype(formatter.mimetype, req)._2)
                     }
                   }
@@ -431,12 +433,13 @@ callback=< [URL] >
         //    else if(Settings.authSystemVersion==1 && !security.RSAAuthorizationService.authorize(normalizedPath,request.headers.get("X-CM-WELL-TOKEN")))
         //      Future.successful(Forbidden(Json.obj("success" -> false, "message" -> """authorization failed!""")))
         else {
+          val nbg = originalRequest.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
           //deleting values based on json
           request.getQueryString("data") match {
             case Some(jsonStr) =>
               jsonToFields(jsonStr.getBytes("UTF-8")) match {
                 case Success(fields) =>
-                  CRUDServiceFS.deleteInfoton(normalizedPath, Some(fields)).map { _ => Ok(Json.obj("success" -> true)) }
+                  crudServiceFS.deleteInfoton(normalizedPath, Some(fields)).map { _ => Ok(Json.obj("success" -> true)) }
                 case Failure(exception) => asyncErrorHandler(exception)
               }
             case None => {
@@ -452,15 +455,15 @@ callback=< [URL] >
 
               val p = Promise[Result]()
               for {
-                either <- infotonPathDeletionAllowed(normalizedPath, request.getQueryString("recursive").getOrElse("true").toBoolean)
+                either <- infotonPathDeletionAllowed(normalizedPath, request.getQueryString("recursive").getOrElse("true").toBoolean,nbg)
               } {
                 (fields.isDefined, either) match {
-                  case (true, _) => CRUDServiceFS.deleteInfoton(normalizedPath, fields)
+                  case (true, _) => crudServiceFS.deleteInfoton(normalizedPath, fields, nbg)
                     .onComplete {
                       case Success(b) => p.success(Ok(Json.obj("success" -> b)))
                       case Failure(e) => p.success(InternalServerError(Json.obj("success" -> false, "message" -> e.getMessage)))
                     }
-                  case (false, Right(paths)) => CRUDServiceFS.deleteInfotons(paths.map(_ -> None).toList)
+                  case (false, Right(paths)) => crudServiceFS.deleteInfotons(paths.map(_ -> None).toList, nbg)
                     .onComplete {
                       case Success(b) => p.success(Ok(Json.obj("success" -> b)))
                       case Failure(e) => p.success(InternalServerError(Json.obj("success" -> false, "message" -> e.getMessage)))
@@ -481,7 +484,7 @@ callback=< [URL] >
     .fold(Success(None): Try[Option[RawFieldFilter]])(FieldFilterParser.parseQueryParams(_).map(Some.apply))
     .map { qpOpt =>
 
-      if (CRUDServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
+      if (crudServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
         Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "Too many open iterators. wait and try later.")))
       else {
         val normalizedPath = normalizePath(request.path)
@@ -494,7 +497,8 @@ callback=< [URL] >
         val withHistory = request.queryString.keySet("with-history")
         val withDeleted = request.queryString.keySet("with-deleted")
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
-        val withData = request.getQueryString("with-data") //.flatMap(FormatExtractor.unapply)
+        val withData = request.getQueryString("with-data")
+        val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
         val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
         fieldsFiltersFut.flatMap { fieldFilter =>
 
@@ -512,7 +516,7 @@ callback=< [URL] >
           }
 
           val fmFut = extractFieldsMask(request)
-          CRUDServiceFS.startScroll(
+          crudServiceFS.startScroll(
             pathFilter,
             fieldFilter,
             Some(DatesFilter(from, to)),
@@ -520,7 +524,7 @@ callback=< [URL] >
             scrollTtl,
             withHistory,
             withDeleted,
-            debugInfo = request.queryString.keySet("debug-info")).flatMap { startScrollResult =>
+            debugInfo = request.queryString.keySet("debug-info"),nbg).flatMap { startScrollResult =>
             val rv = createScrollIdDispatcherActorFromIteratorId(startScrollResult.iteratorId, withHistory, (scrollTtl + 5).seconds)
             fmFut.map { fm =>
               Ok(formatter.render(startScrollResult.copy(iteratorId = rv).masked(fm))).as(formatter.mimetype)
@@ -565,7 +569,7 @@ callback=< [URL] >
     .fold(Success(None): Try[Option[RawFieldFilter]])(FieldFilterParser.parseQueryParams(_).map(Some.apply))
     .map { qpOpt =>
 
-      if (CRUDServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
+      if (crudServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
         Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "Too many open search contexts. wait and try later.")))
       else {
         val normalizedPath = normalizePath(request.path)
@@ -578,6 +582,7 @@ callback=< [URL] >
         val withMeta = request.queryString.keySet("with-meta")
         val length = request.getQueryString("length").flatMap(asLong)
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
+        val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
         val fieldsMaskFut = extractFieldsMask(request)
         val (withData, format) = {
           val wd = request.getQueryString("with-data")
@@ -597,7 +602,6 @@ callback=< [URL] >
             val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
             fieldsFiltersFut.flatMap { fieldFilter =>
               fieldsMaskFut.flatMap { fieldsMask =>
-                import scala.concurrent.ExecutionContext.Implicits.global
 
                 /* RDF types allowed in mstream are: ntriples, nquads, jsonld & jsonldq
                  * since, the jsons are not realy RDF, just flattened json of infoton per line,
@@ -632,7 +636,8 @@ callback=< [URL] >
                   fieldFilter = fieldFilter,
                   datesFilter = datesFilter,
                   withHistory = withHistory,
-                  withDeleted = withDeleted).map {
+                  withDeleted = withDeleted,
+                  nbg = nbg).map {
                   case (source, hits) => {
                     import cmwell.ws.Streams._
                     val s = scrollSourceToByteString(source, formatter, withData.isDefined, withHistory, length, fieldsMask)
@@ -651,7 +656,7 @@ callback=< [URL] >
     .fold(Success(None): Try[Option[RawFieldFilter]])(FieldFilterParser.parseQueryParams(_).map(Some.apply))
     .map { qpOpt =>
 
-      if (CRUDServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
+      if (crudServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
         Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "Too many open search contexts. wait and try later.")))
       else {
         val normalizedPath = normalizePath(request.path)
@@ -666,6 +671,7 @@ callback=< [URL] >
         val length = request.getQueryString("length").flatMap(asLong)
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
         val fieldsMaskFut = extractFieldsMask(request)
+        val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
         val (withData, format) = {
           val wd = request.getQueryString("with-data")
           val frmt = request.getQueryString("format").getOrElse({
@@ -731,7 +737,7 @@ callback=< [URL] >
     .fold(Success(None): Try[Option[RawFieldFilter]])(FieldFilterParser.parseQueryParams(_).map(Some.apply))
     .map { qpOpt =>
 
-      if (CRUDServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
+      if (crudServiceFS.countSearchOpenContexts().map(_._2).sum > Settings.maxSearchContexts)
         Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "Too many open search contexts. wait and try later.")))
       else {
         val normalizedPath = normalizePath(request.path)
@@ -1028,7 +1034,7 @@ callback=< [URL] >
           val pp  = PaginationParams(0, lengthHint)
           val fsp = FieldSortParams(List("system.indexTime" -> Asc))
 
-          val future = CRUDServiceFS.thinSearch(
+          val future = crudServiceFS.thinSearch(
             pathFilter       = pf,
             fieldFilters     = Some(ffs),
             datesFilter      = None,
@@ -1150,7 +1156,7 @@ callback=< [URL] >
     }
     else {
 
-      Future.traverse(newResults)(str => CRUDServiceFS.getInfotonByUuidAsync(str.uuid).map(_ -> str.uuid)).flatMap { newInfotonsBoxes =>
+      Future.traverse(newResults)(str => crudServiceFS.getInfotonByUuidAsync(str.uuid).map(_ -> str.uuid)).flatMap { newInfotonsBoxes =>
 
         val newInfotons = newInfotonsBoxes.collect { case (FullBox(i), _) => i }
 
@@ -1270,7 +1276,7 @@ callback=< [URL] >
                 withData = withDataFormat,
                 forceUniqueness = withHistory)
 
-              val futureThatMayHang: Future[String] = CRUDServiceFS.scroll(scrollId, scrollTtl + 5, withData).flatMap { tmpIterationResults =>
+              val futureThatMayHang: Future[String] = crudServiceFS.scroll(scrollId, scrollTtl + 5, withData).flatMap { tmpIterationResults =>
                 fieldsMaskFut.flatMap { fieldsMask =>
                   val rv = createScrollIdDispatcherActorFromIteratorId(tmpIterationResults.iteratorId, withHistory, scrollTtl.seconds)
                   val iterationResults = tmpIterationResults.copy(iteratorId = rv).masked(fieldsMask)
@@ -1351,7 +1357,7 @@ callback=< [URL] >
           val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
           fieldsFiltersFut.flatMap { fieldFilters =>
             apfut.flatMap { af =>
-              CRUDServiceFS.aggregate(pathFilter, fieldFilters, Some(DatesFilter(from, to)), PaginationParams(offset, length), withHistory, af.flatten, debugInfo).map { aggResult =>
+              crudServiceFS.aggregate(pathFilter, fieldFilters, Some(DatesFilter(from, to)), PaginationParams(offset, length), withHistory, af.flatten, debugInfo).map { aggResult =>
                 request.getQueryString("format").getOrElse("json") match {
                   case FormatExtractor(formatType) => {
                     val formatter = FormatterManager.getFormatter(
@@ -1420,7 +1426,7 @@ callback=< [URL] >
           val fieldsFiltersFut = qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff).map(Some.apply))
           fieldsFiltersFut.flatMap { fieldFilters =>
             fieldSortParamsFut.flatMap { fieldSortParams =>
-              CRUDServiceFS.search(pathFilter, fieldFilters, Some(DatesFilter(from, to)),
+              crudServiceFS.search(pathFilter, fieldFilters, Some(DatesFilter(from, to)),
                 PaginationParams(offset, length), withHistory, withData, fieldSortParams, debugInfo, withDeleted).flatMap { unmodifiedSearchResult =>
 
                 val ygModified = getQueryString("yg") match {
@@ -1551,7 +1557,7 @@ callback=< [URL] >
                   filterOutBlanks = true,
                   forceUniqueness = true)
 
-                val infotonsSource = CRUDServiceFS.getInfotonHistoryReactive(path)
+                val infotonsSource = crudServiceFS.getInfotonHistoryReactive(path)
 
                 val f: Formattable => ByteString = formattableToByteString(formatter)
                 val bytes = infotonsSource.map(f andThen {
@@ -1573,7 +1579,7 @@ callback=< [URL] >
                 withData = request.getQueryString("with-data"))
             }
 
-            CRUDServiceFS.getInfotonHistory(path, limit).map(ihv =>
+            crudServiceFS.getInfotonHistory(path, limit).map(ihv =>
               Ok(formatter.render(ihv)).as(overrideMimetype(formatter.mimetype, request)._2)
             )
           }
@@ -1593,7 +1599,7 @@ callback=< [URL] >
             }
           }
 
-          CRUDServiceFS.getInfoton(path, Some(offset), Some(length)).flatMap {
+          crudServiceFS.getInfoton(path, Some(offset), Some(length)).flatMap {
 //            case None =>
 //              infotonOptionToReply(request, None, recursiveCalls)
             case Some(UnknownNestedContent(i)) =>
@@ -1726,7 +1732,7 @@ callback=< [URL] >
           jsonToFields(bodyBytes) match {
             case Success(fields) =>
               InfotonValidator.validateValueSize(fields)
-              boolFutureToRespones(CRUDServiceFS.putInfoton(ObjectInfoton(normalizedPath, Settings.dataCenter, None, fields)))
+              boolFutureToRespones(crudServiceFS.putInfoton(ObjectInfoton(normalizedPath, Settings.dataCenter, None, fields)))
             // TODO handle validation
             case Failure(exception) => asyncErrorHandler(exception)
           }
@@ -1736,7 +1742,7 @@ callback=< [URL] >
           if (content.isEmpty) Future.successful(BadRequest(Json.obj("success" -> false, "cause" -> "empty content")))
           else {
             val contentType = request.headers.get("Content-Type").orElse(MimeTypeIdentifier.identify(content, normalizedPath.slice(normalizedPath.lastIndexOf("/"), normalizedPath.length))).getOrElse("text/plain")
-            boolFutureToRespones(CRUDServiceFS.putInfoton(FileInfoton(path = normalizedPath, dc = Settings.dataCenter, content = Some(FileContent(content, contentType)))))
+            boolFutureToRespones(crudServiceFS.putInfoton(FileInfoton(path = normalizedPath, dc = Settings.dataCenter, content = Some(FileContent(content, contentType)))))
           }
         }
         case XCmWellType.FileMD() => {
@@ -1744,7 +1750,7 @@ callback=< [URL] >
           jsonToFields(bodyBytes) match {
             case Success(fields) =>
               InfotonValidator.validateValueSize(fields)
-              boolFutureToRespones(CRUDServiceFS.putInfoton(FileInfoton(path = normalizedPath, dc = Settings.dataCenter, fields = Some(fields))))
+              boolFutureToRespones(crudServiceFS.putInfoton(FileInfoton(path = normalizedPath, dc = Settings.dataCenter, fields = Some(fields))))
             case Failure(exception) => Future.successful(BadRequest(Json.obj("success" -> false, "cause" -> exception.getMessage)))
           }
         }
@@ -1756,7 +1762,7 @@ callback=< [URL] >
             case "1" => LinkType.Temporary
             case "2" => LinkType.Forward
           }
-          boolFutureToRespones(CRUDServiceFS.putInfoton(LinkInfoton(path = normalizedPath, dc = Settings.dataCenter, fields = Some(Map[String, Set[FieldValue]]()), linkTo = linkTo, linkType = linkType)))
+          boolFutureToRespones(crudServiceFS.putInfoton(LinkInfoton(path = normalizedPath, dc = Settings.dataCenter, fields = Some(Map[String, Set[FieldValue]]()), linkTo = linkTo, linkType = linkType)))
         }
         case _ => Future.successful(BadRequest(Json.obj("success" -> false, "cause" -> "unrecognized type")))
       }
@@ -1820,7 +1826,7 @@ callback=< [URL] >
     else if(isReactive(req)){
       val formatter = getFormatter(req, "json")
       val parallelism = req.getQueryString("parallelism").flatMap(asInt).getOrElse(1)
-      CRUDServiceFS.rFix(normalizePath(req.path),parallelism).map { source =>
+      crudServiceFS.rFix(normalizePath(req.path),parallelism).map { source =>
         val s = source.map { bs =>
           val msg = if (bs._2.isEmpty) None else Some(bs._2)
           ByteString(formatter.render(SimpleResponse(bs._1, msg)), StandardCharsets.UTF_8)
@@ -1830,7 +1836,7 @@ callback=< [URL] >
     }
     else {
       val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
-      val f = CRUDServiceFS.fix(normalizePath(req.path),limit)
+      val f = crudServiceFS.fix(normalizePath(req.path),limit)
       val formatter = getFormatter(req, "json")
       val r = f.map {
         bs => Ok(formatter.render(SimpleResponse(bs._1, if (bs._2.isEmpty) None else Some(bs._2)))).as(overrideMimetype(formatter.mimetype, req)._2)
@@ -1841,7 +1847,7 @@ callback=< [URL] >
 
   def handleVerify(req: Request[AnyContent]): Future[Result] = {
     val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
-    val f = CRUDServiceFS.verify(normalizePath(req.path),limit)
+    val f = crudServiceFS.verify(normalizePath(req.path),limit)
     val formatter = getFormatter(req, "json")
     f.map {
       b => Ok(formatter.render(SimpleResponse(b, None))).as(overrideMimetype(formatter.mimetype, req)._2)
@@ -1851,7 +1857,7 @@ callback=< [URL] >
   def handleInfo(req: Request[AnyContent]): Future[Result] = {
     val path = normalizePath(req.path)
     val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
-    CRUDServiceFS.info(path,limit).map {
+    crudServiceFS.info(path,limit).map {
       case (cas, es, zs) => {
         val c = cas.map {
           case (u, io) => s"cas $u ${io.map(i => JsonFormatter().render(i)).getOrElse("none")}"
@@ -1873,7 +1879,7 @@ callback=< [URL] >
     if (!AuthUtils.isOperationAllowedForUser(security.Overwrite, AuthUtils.extractTokenFrom(req)))
       Future.successful(Forbidden("not authorized to overwrite"))
     else {
-      val f = CRUDServiceFS.fixDc(normalizePath(req.path), Settings.dataCenter)
+      val f = crudServiceFS.fixDc(normalizePath(req.path), Settings.dataCenter)
       val formatter = getFormatter(req, "json")
       f.map {
         bs => Ok(formatter.render(SimpleResponse(bs, None))).as(overrideMimetype(formatter.mimetype, req)._2)
@@ -1903,7 +1909,7 @@ callback=< [URL] >
         val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
         val res = if (onlyLast)
           notImplemented // CRUDServiceFS.rollback(path,limit)
-        else if (includeLast) CRUDServiceFS.purgePath(path, includeLast, limit) else notImplemented // CRUDServiceFS.purgePath(path, includeLast, limit)
+        else if (includeLast) crudServiceFS.purgePath(path, includeLast, limit) else notImplemented // CRUDServiceFS.purgePath(path, includeLast, limit)
 
         res.onComplete {
           case Success(_) =>
@@ -1925,7 +1931,7 @@ callback=< [URL] >
     } else {
       val formatter = getFormatter(req,"json")
       val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
-      CRUDServiceFS.purgePath2(path,limit).map{
+      crudServiceFS.purgePath2(path,limit).map{
         b => Ok(formatter.render(SimpleResponse(true,None))).as(overrideMimetype(formatter.mimetype,req)._2)
       }
     }
@@ -1936,17 +1942,17 @@ callback=< [URL] >
       Forbidden("Not authorized")
     }
     else {
-      CRUDServiceFS.newBG = !CRUDServiceFS.newBG
-        Ok("Toggled BG to " + {if(CRUDServiceFS.newBG) "new" else "old"} + " implementation")
+      crudServiceFS.newBG = !crudServiceFS.newBG
+        Ok("Toggled BG to " + {if(crudServiceFS.newBG) "new" else "old"} + " implementation")
     }
   }
 
   def handleRawRow(uuid: String) = Action.async { req =>
     if(isReactive(req)) {
-      val src = CRUDServiceFS.reactiveRawCassandra(uuid).intersperse("\n").map(ByteString(_,StandardCharsets.UTF_8))
+      val src = crudServiceFS.reactiveRawCassandra(uuid).intersperse("\n").map(ByteString(_,StandardCharsets.UTF_8))
       Future.successful(Ok.chunked(src).as(overrideMimetype("text/csv;charset=UTF-8", req)._2))
     }
-    else CRUDServiceFS.getRawCassandra(uuid).map {
+    else crudServiceFS.getRawCassandra(uuid).map {
       case (payload,mimetype) => Ok(payload).as(overrideMimetype(mimetype, req)._2)
     }
   }
@@ -1982,7 +1988,7 @@ callback=< [URL] >
     req.body.asBytes() match {
       case Some(payload) if allowed =>
         val ttl = req.getQueryString("ttl").fold(0)(_.toInt)
-        CRUDServiceFS.zStore.put(uzid, payload.toArray[Byte], ttl, req.queryString.keySet("batched")).map(_ => Ok("""{"success":true}""")).recover {
+        crudServiceFS.zStore.put(uzid, payload.toArray[Byte], ttl, req.queryString.keySet("batched")).map(_ => Ok("""{"success":true}""")).recover {
           case e => InternalServerError(s"""{"success":false,"message":"${e.getMessage}"}""")
         }
       case None if allowed => Future.successful(BadRequest("POST body may not be empty!"))

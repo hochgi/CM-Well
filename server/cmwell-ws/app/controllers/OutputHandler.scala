@@ -49,7 +49,7 @@ import scala.util.{Failure, Success, Try}
  * To change this template use File | Settings | File Templates.
  */
 @Singleton
-class OutputHandler  @Inject() extends Controller with LazyLogging with TypeHelpers {
+class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS) extends Controller with LazyLogging with TypeHelpers {
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
   def overrideMimetype(default: String, req: Request[AnyContent]): (String, String) = req.getQueryString("override-mimetype") match {
@@ -117,8 +117,8 @@ class OutputHandler  @Inject() extends Controller with LazyLogging with TypeHelp
     }
     Flow[String].mapAsync(cmwell.ws.Streams.parallelism){ msg =>
       msg.take(4) match {
-        case "/ii/" => CRUDServiceFS.getInfotonByUuidAsync(msg.drop(4))
-        case _ => CRUDServiceFS.getInfotonByPathAsync(msg)
+        case "/ii/" => crudServiceFS.getInfotonByUuidAsync(msg.drop(4))
+        case _ => crudServiceFS.getInfotonByPathAsync(msg)
       }
     }.collect {
       case FullBox(i) =>formatter.render(i)
@@ -207,7 +207,7 @@ class OutputHandler  @Inject() extends Controller with LazyLogging with TypeHelp
       case (xs, ys) => (xs.map(_.drop(4)), ys) // "/ii/".length = 4
     }
 
-    CRUDServiceFS.getInfotonsByPathOrUuid(byPath, byUuid).flatMap {
+    crudServiceFS.getInfotonsByPathOrUuid(byPath, byUuid).flatMap {
       case BagOfInfotons(coreInfotons) => {
         val eInfotons = req.getQueryString("yg") match {
           case None => Future.successful(true -> coreInfotons)

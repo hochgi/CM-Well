@@ -38,6 +38,7 @@ import wsutil._
 import ld.cmw.PassiveFieldTypesCache
 import org.joda.time.{DateTime, DateTimeZone}
 import javax.inject._
+
 import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent._
@@ -45,7 +46,7 @@ import scala.language.postfixOps
 import scala.util._
 
 @Singleton
-class InputHandler  @Inject() (ingestPushback: IngestPushback) extends Controller with LazyLogging {
+class InputHandler  @Inject() (ingestPushback: IngestPushback, crudServiceFS: CRUDServiceFS) extends Controller with LazyLogging {
 
   val bo1 = collection.breakOut[List[Infoton],String,Set[String]]
   val bo2 = collection.breakOut[Vector[Infoton],String,Set[String]]
@@ -113,8 +114,8 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback) extends Controlle
 
               val (metaInfotons, infotonsToPut) = allInfotons.partition(_.path.startsWith("/meta/"))
 
-              val f = CRUDServiceFS.putInfotons(metaInfotons)
-              CRUDServiceFS.putOverwrites(infotonsToPut).flatMap { b =>
+              val f = crudServiceFS.putInfotons(metaInfotons)
+              crudServiceFS.putOverwrites(infotonsToPut).flatMap { b =>
                 f.map {
                   case true if b => Ok(Json.obj("success" -> true))
                   case _ => BadRequest(Json.obj("success" -> false))
@@ -333,12 +334,12 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback) extends Controlle
                 require(dontTrack.forall(!atomicUpdates.contains(_)),s"atomic updates cannot operate on multiple actions in a single ingest.")
 
                 val to = tidOpt.map(_.token)
-                val d1 = CRUDServiceFS.deleteInfotons(dontTrack.map(_ -> None))
-                val d2 = CRUDServiceFS.deleteInfotons(track.map(_ -> None),to,atomicUpdates)
+                val d1 = crudServiceFS.deleteInfotons(dontTrack.map(_ -> None))
+                val d2 = crudServiceFS.deleteInfotons(track.map(_ -> None),to,atomicUpdates)
 
                 d1.zip(d2).flatMap { case (b01,b02) =>
-                  val f1 = CRUDServiceFS.upsertInfotons(infotonsToUpsert, deleteMap, to, atomicUpdates)
-                  val f2 = CRUDServiceFS.putInfotons(infotonsToPut, to, atomicUpdates)
+                  val f1 = crudServiceFS.upsertInfotons(infotonsToUpsert, deleteMap, to, atomicUpdates)
+                  val f2 = crudServiceFS.putInfotons(infotonsToPut, to, atomicUpdates)
                   f1.zip(f2).flatMap { case (b1, b2) =>
                     if (b01 && b02 && b1 && b2)
                       blocking.fold(Future.successful(Ok(Json.obj("success" -> true)).withHeaders(tidHeaderOpt.toSeq: _*))) { _ =>
@@ -447,10 +448,10 @@ class InputHandler  @Inject() (ingestPushback: IngestPushback) extends Controlle
                           case i: Infoton => i //to prevent compilation warnings...
                         } else v) ++ metaFields
                         if (req.getQueryString("replace-mode").isEmpty)
-                          CRUDServiceFS.putInfotons(infotonsToPut).map(b => Ok(Json.obj("success" -> b)))
+                          crudServiceFS.putInfotons(infotonsToPut).map(b => Ok(Json.obj("success" -> b)))
                         else {
                           val d: Map[String, Set[String]] = infotonsToPut collect { case i if i.fields.isDefined => prependSlash(i.path) -> i.fields.get.keySet} toMap;
-                          CRUDServiceFS.upsertInfotons(infotonsToPut.toList, d.mapValues(_.map(_ -> None).toMap)).map(b => Ok(Json.obj("success" -> b)))
+                          crudServiceFS.upsertInfotons(infotonsToPut.toList, d.mapValues(_.map(_ -> None).toMap)).map(b => Ok(Json.obj("success" -> b)))
                         }
                       }
                     }

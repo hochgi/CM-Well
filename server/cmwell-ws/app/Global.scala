@@ -45,7 +45,7 @@ import uk.org.lidalia.sysoutslf4j.context.SysOutOverSLF4J
  * To change this template use File | Settings | File Templates.
  */
 @Singleton
-class Global @Inject()(implicit ec: ExecutionContext) extends LazyLogging {
+class Global @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends LazyLogging {
 
   onStart
 
@@ -58,7 +58,7 @@ class Global @Inject()(implicit ec: ExecutionContext) extends LazyLogging {
 
     Grid.setGridConnection(GridConnection(memberName = "ws", labels = Set("subscriber")))
 
-    val offsetsService = new ZStoreOffsetsService(CRUDServiceFS.zStore)
+    val offsetsService = new ZStoreOffsetsService(crudServiceFS.zStore)
 
     Grid.declareServices(ServiceTypes().
       add(BGMonitorActor.serviceName, classOf[BGMonitorActor], zkServers, offsetsService, concurrent.ExecutionContext.Implicits.global).
@@ -86,7 +86,7 @@ class Global @Inject()(implicit ec: ExecutionContext) extends LazyLogging {
       }
     }
 
-    Try(CRUDServiceFS.getInfoton("/", None, None)).recover(recoverWithExitOnFail)
+    Try(crudServiceFS.getInfoton("/", None, None)).recover(recoverWithExitOnFail)
 
     RequestMonitor.init
 
@@ -96,7 +96,7 @@ class Global @Inject()(implicit ec: ExecutionContext) extends LazyLogging {
     scheduleAfterStart(30.seconds){
       Try{
         val f = cmwell.util.concurrent.retry(3) {
-          CRUDServiceFS.search(
+          crudServiceFS.search(
             pathFilter = Some(PathFilter("/meta/ns", descendants = false)),
             fieldFilters = None,
             datesFilter = None,
