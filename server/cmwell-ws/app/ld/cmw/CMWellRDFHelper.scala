@@ -30,7 +30,7 @@ import cmwell.web.ld.exceptions.UnretrievableIdentifierException
 import cmwell.ws.Settings
 import com.google.common.cache.{Cache, CacheBuilder, CacheLoader, LoadingCache}
 import com.typesafe.scalalogging.LazyLogging
-
+import javax.inject._
 import ld.cmw.PassiveFieldTypesCache
 import logic.CRUDServiceFS
 import wsutil.DirectFieldKey
@@ -42,14 +42,8 @@ import scala.util.{Failure, Success, Try}
 import scala.collection.mutable.{Set => MSet}
 
 
-/**
- * Created with IntelliJ IDEA.
- * User: gilad
- * Date: 7/14/13
- * Time: 10:14 AM
- * To change this template use File | Settings | File Templates.
- */
-object CMWellRDFHelper extends LazyLogging {
+@Singleton
+class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLogging {
 
   def loadNsCachesWith(infotons: Seq[Infoton]): Unit = infotons.foreach{ i =>
 
@@ -89,7 +83,7 @@ object CMWellRDFHelper extends LazyLogging {
   }
 
   /**
-   * 
+   *
    */
   private[this] val hashToMetaNsInfotonCache: LoadingCache[String,Infoton] = CacheBuilder
     .newBuilder()
@@ -207,7 +201,7 @@ object CMWellRDFHelper extends LazyLogging {
   def urlToHashAsync(url: String)(implicit ec: ExecutionContext): Future[String] = urlToHashPermanentCache.getAsync(url)(ec)
 
   /**
-   * 
+   *
    */
   private[this] val prefixToHashCache: LoadingCache[String,String] = CacheBuilder
     .newBuilder()
@@ -222,7 +216,7 @@ object CMWellRDFHelper extends LazyLogging {
     }
 
   /**
-   * 
+   *
    * @param prefix
    * @param awaitTimeout
    * @return
@@ -232,7 +226,7 @@ object CMWellRDFHelper extends LazyLogging {
   }
 
   /**
-   * 
+   *
    * @param prefix
    * @param withFallBack
    * @return
@@ -257,7 +251,7 @@ object CMWellRDFHelper extends LazyLogging {
   }
 
   /**
-   * 
+   *
    * @param prefix
    * @param withFallBack
    * @return
@@ -313,7 +307,7 @@ object CMWellRDFHelper extends LazyLogging {
       triple
     }
 
-    CRUDServiceFS.search(
+    crudServiceFS.search(
       pathFilter = Some(PathFilter("/meta/ns", false)),
       fieldFilters = Some(/*MultiFieldFilter(Must,List(*/FieldFilter(Should, Equals, "prefix", prefix)/*,FieldFilter(Should, Equals, "s$prefix", prefix)))*/),
       datesFilter = None,
@@ -321,7 +315,7 @@ object CMWellRDFHelper extends LazyLogging {
       case SearchResults(_, _, _, _, _, infotons, _) if infotons.exists(_.fields.isDefined) =>
         Future(ensureRequirementsAndOutputPair(infotons.filter(_.fields.isDefined),Right.apply))
       case SearchResults(_, _, _, _, _, infotons, _) if withFallBack =>
-        CRUDServiceFS.getInfoton("/meta/ns/" + prefix, None, None).map { iOpt =>
+        crudServiceFS.getInfoton("/meta/ns/" + prefix, None, None).map { iOpt =>
           ensureRequirementsAndOutputPair(iOpt.map(_.infoton).toSeq, Left.apply)
         }
       case _ => throw new NoFallbackException
@@ -331,10 +325,10 @@ object CMWellRDFHelper extends LazyLogging {
   class NoFallbackException extends RuntimeException("No fallback...")
 
   private[this] def getMetaNsInfotonForHash(hash: String): Future[Option[Infoton]] =
-    CRUDServiceFS.getInfoton("/meta/ns/" + hash, None, None).map(_.map(_infoton))(scala.concurrent.ExecutionContext.Implicits.global)
+    crudServiceFS.getInfoton("/meta/ns/" + hash, None, None).map(_.map(_infoton))(scala.concurrent.ExecutionContext.Implicits.global)
 
   private[this] def getMetaNsInfotonForUrl(url: String): Future[Option[Infoton]] =
-    CRUDServiceFS.search(
+    crudServiceFS.search(
       pathFilter =  Some(PathFilter("/meta/ns", descendants = false)),
       fieldFilters = Some(/*MultiFieldFilter(Must,List(*/FieldFilter(Should,Equals,"url",url)/*,FieldFilter(Should,Equals,"s$url",url)))*/),
       datesFilter = None,
@@ -404,7 +398,7 @@ object CMWellRDFHelper extends LazyLogging {
    */
   def prefixToHash(prefix: String): Option[String] = Try(prefixToHashCache.getBlocking(prefix)).toOption
 
-  
+
   sealed trait PrefixState //to perform
   case object Create extends PrefixState
   case object Exists extends PrefixState
@@ -488,7 +482,7 @@ object CMWellRDFHelper extends LazyLogging {
     }(scala.concurrent.ExecutionContext.Implicits.global)
     f
   }
-  
+
   private[this] def getAliasForQuadUrlAsyncActual(graphName: String): Future[Option[String]] = {
     getAliasForQuadUrlAsync(graphName,ByBase64).flatMap{
       case some: Some[String] => Future.successful(some)
@@ -502,7 +496,7 @@ object CMWellRDFHelper extends LazyLogging {
       case ByCrc32 => Hash.crc32(graphName)
     }
 
-    CRUDServiceFS.getInfoton("/meta/quad/" + hashByAlg, None, None).flatMap{
+    crudServiceFS.getInfoton("/meta/quad/" + hashByAlg, None, None).flatMap{
       case Some(Everything(i)) => Future.successful[Option[String]]{
         i.fields.flatMap(_.get("alias").flatMap {
           set => {
@@ -538,7 +532,7 @@ object CMWellRDFHelper extends LazyLogging {
       }
     }
   }
-  
+
   def getQuadUrlForAliasAsync(alias: String): Future[String] = {
     val f = getQuadUrlForAliasAsyncActual(alias)
     f.onComplete{
@@ -552,7 +546,7 @@ object CMWellRDFHelper extends LazyLogging {
   }
 
   def getQuadUrlForAliasAsyncActual(alias: String): Future[String] = {
-    CRUDServiceFS.search(
+    crudServiceFS.search(
       pathFilter = Some(PathFilter("/meta/quad",false)),
       fieldFilters = Some(FieldFilter(Should,Equals,"alias",alias)),
       datesFilter = None,

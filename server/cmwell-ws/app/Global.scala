@@ -45,7 +45,7 @@ import uk.org.lidalia.sysoutslf4j.context.SysOutOverSLF4J
  * To change this template use File | Settings | File Templates.
  */
 @Singleton
-class Global @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends LazyLogging {
+class Global @Inject()(crudServiceFS: CRUDServiceFS, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext) extends LazyLogging {
 
   onStart
 
@@ -113,10 +113,10 @@ class Global @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionConte
           val groupedByUrls = sr.infotons.groupBy(_.fields.flatMap(_.get("url")))
           val goodInfotons = groupedByUrls.collect { case (Some(k),v) if k.size==1 =>
               val url = k.head.value.asInstanceOf[String]
-              CMWellRDFHelper.getTheNonGeneratedMetaNsInfoton(url, v)
+              cmwellRDFHelper.getTheNonGeneratedMetaNsInfoton(url, v)
           }
 
-          CMWellRDFHelper.loadNsCachesWith(goodInfotons.toSeq)
+          cmwellRDFHelper.loadNsCachesWith(goodInfotons.toSeq)
         }
       }.recover(recoverWithLogOnFail)
     }

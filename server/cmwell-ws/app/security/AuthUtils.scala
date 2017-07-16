@@ -58,7 +58,7 @@ class AuthUtils @Inject()(authCache: AuthCache, crudServiceFS: CRUDServiceFS) {
       orElse(req.cookies.get(key).map(_.value)).
       orElse(req.cookies.get(oldKey).map(_.value))
 
-    jwtOpt.flatMap(Token.apply)
+    jwtOpt.flatMap(Token(_,authCache))
   }
 
   def isValidatedAs(tokenOpt: Option[Token], expectedUsername: String) = tokenOpt.exists(token => token.isValid && token.username == expectedUsername)

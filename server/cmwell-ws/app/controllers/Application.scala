@@ -35,7 +35,7 @@ import cmwell.util.concurrent.{Combiner, SimpleScheduler, SingleElementLazyAsync
 import cmwell.util.formats.Encoders
 import cmwell.util.http.SimpleHttpClient
 import cmwell.util.loading.ScalaJsRuntimeCompiler
-import cmwell.util.{BoxedFailure, EmptyBox, FullBox}
+import cmwell.util.{Box, BoxedFailure, EmptyBox, FullBox}
 import cmwell.web.ld.exceptions.UnsupportedURIException
 import cmwell.ws.adt.request.{CMWellRequest, CreateConsumer, Search}
 import cmwell.ws.adt.{BulkConsumeState, ConsumeState, SortedConsumeState}
@@ -58,6 +58,8 @@ import play.utils.UriEncoding
 import security.PermissionLevel.PermissionLevel
 import security._
 import wsutil.{asyncErrorHandler, errorHandler, _}
+import cmwell.syntaxutils.!!!
+import cmwell.web.ld.cmw.CMWellRDFHelper
 
 import scala.collection.mutable.{HashMap, MultiMap}
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -108,7 +110,8 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
                             oCache: ObgPassiveFieldTypesCache,
                             tbg: NbgToggler,
                             streams: Streams,
-                            authUtils: AuthUtils) extends Controller with FileInfotonCaching with LazyLogging {
+                            authUtils: AuthUtils,
+                            cmwellRDFHelper: CMWellRDFHelper) extends Controller with FileInfotonCaching with LazyLogging {
 
   import ApplicationUtils._
 
@@ -507,7 +510,7 @@ callback=< [URL] >
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
         val withData = request.getQueryString("with-data")
         val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
-        val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg)).map(Some.apply))
+        val fieldsFiltersFut = qpOpt.fold(Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg), cmwellRDFHelper).map(Some.apply))
         fieldsFiltersFut.flatMap { fieldFilter =>
 
           val formatter = request.getQueryString("format").getOrElse("json") match {
@@ -1176,10 +1179,14 @@ callback=< [URL] >
         val newInfotons = newInfotonsBoxes.collect { case (FullBox(i), _) => i }
 
         if (newInfotons.length != newInfotonsBoxes.length) {
-          val (fails,nones) = newInfotonsBoxes.filter(_._1.isEmpty).partition(_._1.isFailure)
-          if(nones.nonEmpty) logger.error("some uuids could not be retrieved: " + nones.map(_._2).mkString("[", ",", "]"))
+          val (fails,nones) = cmwell.util.collections.partitionWith(newInfotonsBoxes.filter(_._1.isEmpty)){
+            case (BoxedFailure(e),u) => Left(e -> u)
+            case (EmptyBox,u) => Right(u)
+            case _ => !!!
+          }
+          if(nones.nonEmpty) logger.error("some uuids could not be retrieved: " + nones.mkString("[", ",", "]"))
           fails.foreach {
-            case (BoxedFailure(e),u) => logger.error(s"uuid [$u] failed",e)
+            case (e,u) => logger.error(s"uuid [$u] failed",e)
           }
         }
 
@@ -1617,13 +1624,14 @@ callback=< [URL] >
           }
 
           crudServiceFS.getInfoton(path, Some(offset), Some(length)).flatMap {
-//            case None =>
-//              infotonOptionToReply(request, None, recursiveCalls)
             case Some(UnknownNestedContent(i)) =>
               //TODO: should still allow xg expansion?
               Future.successful(PartialContent(formatter.render(i)).as(overrideMimetype(formatter.mimetype, request)._2))
             case infopt => {
-              val i = infopt.fold(GhostInfoton.ghost(path)){case Everything(j) => j}
+              val i = infopt.fold(GhostInfoton.ghost(path)){
+                case Everything(j) => j
+                case _: UnknownNestedContent => !!!
+              }
               extractFieldsMask(request).flatMap { fieldsMask =>
                 val toRes = (f: Future[(Boolean, Seq[Infoton])]) => f.map {
                   case ((true, xs)) => Ok(formatter.render(BagOfInfotons(xs))).as(overrideMimetype(formatter.mimetype, request)._2)

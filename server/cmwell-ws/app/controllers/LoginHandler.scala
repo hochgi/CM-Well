@@ -28,11 +28,8 @@ import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
 import scala.concurrent.ExecutionContext.Implicits.global
 
-/**
- * Created by yaakov on 2/4/15.
- */
 @Singleton
-class LoginHandler  @Inject() extends Controller with BasicHttpAuthentication with DigestHttpAuthentication {
+class LoginHandler  @Inject()(authCache: AuthCache) extends Controller with BasicHttpAuthentication with DigestHttpAuthentication {
   private val notAuthenticated = Unauthorized("Not authenticated.\n")
 
   def login: Action[AnyContent] = Action.async { implicit req =>
@@ -47,7 +44,7 @@ class LoginHandler  @Inject() extends Controller with BasicHttpAuthentication wi
     def loginBasic = {
       decodeBasicAuth(req.headers("authorization")) match {
         case (username, pass) => {
-          AuthCache.getUserInfoton(username) match {
+          authCache.getUserInfoton(username) match {
             case Some(user) if Authentication.passwordMatches(user, pass) => grantToken(username, exp)
             case _ => notAuthenticated
           }
@@ -95,13 +92,13 @@ class LoginHandler  @Inject() extends Controller with BasicHttpAuthentication wi
 
   //  private def grantToken(username: String) = Future(Ok(s"Token is hereby granted for $username.").withHeaders("X-CM-WELL-TOKEN" -> Authentication.generateToken(username)))
   private def grantToken(username: String, expiry: Option[DateTime]) = {
-    Try(Token.generate(username, expiry)) match {
+    Try(Token.generate(authCache, username, expiry)) match {
       case Success(token) => Ok(Json.obj("token" -> token))
       case Failure(err) => wsutil.exceptionToResponse(err)
     }
   }
 
-  private def grantTokenWithHtmlRedirectToSPA(username: String) = Redirect(s"/?token=${Token.generate(username)}")
+  private def grantTokenWithHtmlRedirectToSPA(username: String) = Redirect(s"/?token=${Token.generate(authCache, username)}")
 
   private def parseShortFormatDuration(shortFormatDuration: String): DateTime = {
     val durs = Seq("d", "h", "m").map(part => part -> s"(\\d+)(?i)$part".r.findFirstMatchIn(shortFormatDuration).map(_.group(1).toInt).getOrElse(0)).toMap

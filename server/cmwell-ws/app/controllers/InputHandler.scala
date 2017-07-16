@@ -51,7 +51,8 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                               nCache: NbgPassiveFieldTypesCache,
                               oCache: ObgPassiveFieldTypesCache,
                               tbg: NbgToggler,
-                              authUtils: AuthUtils) extends Controller with LazyLogging with TypeHelpers {
+                              authUtils: AuthUtils,
+                              cmwellRDFHelper: CMWellRDFHelper) extends Controller with LazyLogging with TypeHelpers {
 
   val bo1 = collection.breakOut[List[Infoton],String,Set[String]]
   val bo2 = collection.breakOut[Vector[Infoton],String,Set[String]]
@@ -283,7 +284,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                       x match {
                         case "default" => FNull(None)
                         case "*" => FNull(Some("*"))
-                        case alias if !FReference.isUriRef(alias) => CMWellRDFHelper.getQuadUrlForAlias(alias) match {
+                        case alias if !FReference.isUriRef(alias) => cmwellRDFHelper.getQuadUrlForAlias(alias) match {
                           //TODO: future optimization: check replace-mode's alias before invoking jena and parsing RDF document
                           case None => throw new UnretrievableIdentifierException(s"The alias '$alias' provided for quad as replace-mode's argument does not exist. Use explicit quad URL, or register a new alias using `graphAlias` meta operation.")
                           case someURI => FNull(someURI)

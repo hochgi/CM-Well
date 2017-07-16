@@ -57,23 +57,22 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
   def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = fieldKey match {
     case NnFieldKey(k) if k.startsWith("system.") || k.startsWith("content.") || k.startsWith("link.") => Future.successful(Set.empty)
     case field => Try {
-      field.internalKey.flatMap { key =>
-        val maybeEither = cache.getIfPresent(key)
-        if (maybeEither eq null) (actor ? UpdateAndGet(field)).mapTo[Set[Char]]
-        else maybeEither match {
-          case Right((ts, types)) => forceUpdateForType match {
-            case None =>
-              if (System.currentTimeMillis() - ts > 30000) {
-                actor ! RequestUpdateFor(field)
-              }
-              Future.successful(types)
-            case Some(forcedTypes) =>
-              if(forcedTypes.diff(types).nonEmpty || (System.currentTimeMillis() - ts > 30000))
-                (actor ? UpdateAndGet(field)).mapTo[Set[Char]]
-              else Future.successful(types)
-          }
-          case Left(fut) => fut
+      val key = field.internalKey
+      val maybeEither = cache.getIfPresent(key)
+      if (maybeEither eq null) (actor ? UpdateAndGet(field)).mapTo[Set[Char]]
+      else maybeEither match {
+        case Right((ts, types)) => forceUpdateForType match {
+          case None =>
+            if (System.currentTimeMillis() - ts > 30000) {
+              actor ! RequestUpdateFor(field)
+            }
+            Future.successful(types)
+          case Some(forcedTypes) =>
+            if(forcedTypes.diff(types).nonEmpty || (System.currentTimeMillis() - ts > 30000))
+              (actor ? UpdateAndGet(field)).mapTo[Set[Char]]
+            else Future.successful(types)
         }
+        case Left(fut) => fut
       }
     }.recover{
       case t: Throwable => Future.failed[Set[Char]](t)
@@ -82,7 +81,8 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
 
   def update(fieldKey: FieldKey, types: Set[Char])(implicit ec: ExecutionContext): Future[Unit] = fieldKey match {
     case NnFieldKey(k) if k.startsWith("system.") || k.startsWith("content.") || k.startsWith("link.") => Future.successful(())
-    case field => field.internalKey.flatMap { key =>
+    case field => {
+      val key = field.internalKey
       lazy val doneFut = (actor ? Put(key, types, true)).map(_ => ())
       val maybeEither = cache.getIfPresent(key)
       if (maybeEither eq null) doneFut
@@ -131,29 +131,24 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
     override def receive: Receive = {
       case RequestUpdateFor(field) => requestedCacheUpdates += field
       case UpdateCache => if (requestedCacheUpdates.nonEmpty) {
-        val keysFut = Future.traverse(requestedCacheUpdates)(fk => fk.internalKey.map(_ -> fk)(updatingExecutionContext))(cbf,updatingExecutionContext)
-        keysFut.foreach { keys =>
-          keys.toMap.foreach {
-            case (internalKey, fk) => {
-              val maybe = cache.getIfPresent(internalKey)
-              if (maybe eq null) {
-                val lefuture = Left(getMetaFieldInfoton(fk).map(infoptToChars)(updatingExecutionContext))
-                cache.put(internalKey, lefuture)
-              }
-              else maybe.right.foreach {
-                case (oTime, chars) =>  {
-                  getMetaFieldInfoton(fk).foreach { infopt =>
-                    val types = infoptToChars(infopt)
-                    if (types.diff(chars).nonEmpty) {
-                      self ! Put(internalKey, types union chars)
-                    }
-                  }(updatingExecutionContext)
+        requestedCacheUpdates.foreach { fk =>
+          val maybe = cache.getIfPresent(fk.internalKey)
+          if (maybe eq null) {
+            val lefuture = Left(getMetaFieldInfoton(fk).map(infoptToChars)(updatingExecutionContext))
+            cache.put(fk.internalKey, lefuture)
+          }
+          else maybe.right.foreach {
+            case (oTime, chars) => {
+              getMetaFieldInfoton(fk).foreach { infopt =>
+                val types = infoptToChars(infopt)
+                if (types.diff(chars).nonEmpty) {
+                  self ! Put(fk.internalKey, types union chars)
                 }
-              }
+              }(updatingExecutionContext)
             }
           }
-        }(updatingExecutionContext)
-        requestedCacheUpdates.clear()// = MSet.empty[FieldKey]
+        }
+        requestedCacheUpdates.clear() // = MSet.empty[FieldKey]
       }
       case Put(internalKey,types,reportWhenDone,reportTo) => {
         lazy val sendr = reportTo.getOrElse(sender())
@@ -186,7 +181,7 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
         val sndr = sender()
         val rv = getMetaFieldInfoton(field).map(infoptToChars)(updatingExecutionContext)
         rv.onComplete {      //field.metaPath is already completed as it is memoized in a lazy val if it is truly async
-          case Failure(e) => logger.error(s"failed to update cache for: ${field.metaPath.value.get}", e)
+          case Failure(e) => logger.error(s"failed to update cache for: ${field.metaPath}", e)
           case Success(types) => {
             val nTime = System.currentTimeMillis()
             lazy val right = Right(nTime->types)
@@ -194,23 +189,22 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
             // cache's concurrencyLevel set to 1, so we should avoid useless updates,
             // nevertheless, it's okay to risk blocking on the cache's write lock here,
             // because writes are rare (once every 2 minutes, and on first-time asked fields)
-            field.internalKey.foreach { internalKey =>
-              val maybe = cache.getIfPresent(internalKey)
-              if (maybe eq null) cache.put(internalKey,right)
-              else maybe match {
-                case Right((oTime,chars)) if types.diff(chars).isEmpty => if(nTime > oTime) cache.put(internalKey,right)
-                case Right((oTime,chars)) => cache.put(internalKey,Right(System.currentTimeMillis → chars.union(types)))
-                case Left(charsFuture) => charsFuture.onComplete {
-                  case Failure(error) => {
-                    logger.error("future stored in types cache failed",error)
-                    self ! Put(internalKey,types)
-                  }
-                  case Success(chars) => if (types diff chars nonEmpty) {
-                    self ! Put(internalKey, types union chars)
-                  }
-                }(updatingExecutionContext)
-              }
-            }(updatingExecutionContext)
+            val internalKey = field.internalKey
+            val maybe = cache.getIfPresent(internalKey)
+            if (maybe eq null) cache.put(internalKey,right)
+            else maybe match {
+              case Right((oTime,chars)) if types.diff(chars).isEmpty => if(nTime > oTime) cache.put(internalKey,right)
+              case Right((oTime,chars)) => cache.put(internalKey,Right(System.currentTimeMillis → chars.union(types)))
+              case Left(charsFuture) => charsFuture.onComplete {
+                case Failure(error) => {
+                  logger.error("future stored in types cache failed",error)
+                  self ! Put(internalKey,types)
+                }
+                case Success(chars) => if (types diff chars nonEmpty) {
+                  self ! Put(internalKey, types union chars)
+                }
+              }(updatingExecutionContext)
+            }
           }
         }(updatingExecutionContext)
       }
@@ -223,9 +217,8 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
       })
     }
 
-    private def getMetaFieldInfoton(field: FieldKey): Future[Option[Infoton]] = field.metaPath.flatMap { path =>
-      crudServiceFS.getInfoton(path, None, None, nbg).map(_.map(_.infoton))(updatingExecutionContext)
-    }(updatingExecutionContext)
+    private def getMetaFieldInfoton(field: FieldKey): Future[Option[Infoton]] =
+      crudServiceFS.getInfoton(field.metaPath, None, None, nbg).map(_.map(_.infoton))(updatingExecutionContext)
   }
 }
 

@@ -32,13 +32,14 @@ import com.typesafe.scalalogging.LazyLogging
 import ld.exceptions.BadFieldTypeException
 import logic.CRUDServiceFS
 import cmwell.util.concurrent.SimpleScheduler
+import ld.cmw.PassiveFieldTypesCache
 import play.api.libs.json.Json
 import play.api.mvc.Results._
 import play.api.mvc.{Request, Result}
 import play.utils.InvalidUriEncodingException
+
 import scala.collection.breakOut
-import scala.concurrent.ExecutionContext.Implicits.{global => dec}
-import scala.concurrent.duration.{FiniteDuration, DurationInt}
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success}
 /**
@@ -254,7 +255,7 @@ package object wsutil extends LazyLogging {
     }
   }
 
-  type RawField[Op <: FieldValeOperator] = (Op,FieldKey)
+  type RawField[Op <: FieldValeOperator] = (Op,Either[UnresolvedFieldKey,DirectFieldKey])
   sealed trait RawAggregationFilter
   case class RawStatsAggregationFilter(name:String = "Statistics Aggregation", field:RawField[FieldValeOperator]) extends RawAggregationFilter
 
@@ -277,8 +278,8 @@ package object wsutil extends LazyLogging {
       if(fn.length > 1 && fn.tail.head == '$') s"-${fn.head}- $name"
       else "-s- " + name
     }
-    def eval(af: RawAggregationFilter)(implicit ec: ExecutionContext): Future[List[AggregationFilter]] = af match {
-      case RawStatsAggregationFilter(name, (op,fk)) => FieldKey.eval(fk).map { fns =>
+    def eval(af: RawAggregationFilter, cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[List[AggregationFilter]] = af match {
+      case RawStatsAggregationFilter(name, (op,fk)) => FieldKey.eval(fk,cache,cmwellRDFHelper).map { fns =>
         fns.map { fn =>
           val uname = {
             if(fns.size == 1) name
@@ -288,8 +289,8 @@ package object wsutil extends LazyLogging {
         }(lbo)
       }
       case RawTermAggregationFilter(name,(op,fk),size,rawSubFilters) if rawSubFilters.nonEmpty => {
-        val ff = FieldKey.eval(fk)
-        Future.traverse(rawSubFilters)(eval).flatMap { subFilters =>
+        val ff = FieldKey.eval(fk,cache,cmwellRDFHelper)
+        Future.traverse(rawSubFilters)(eval(_,cache,cmwellRDFHelper)).flatMap { subFilters =>
           ff.map { fns =>
             fns.map { fn =>
               val uname = {
@@ -301,7 +302,7 @@ package object wsutil extends LazyLogging {
           }
         }
       }
-      case RawTermAggregationFilter(name,(op,fk),size,rawSubFilters) if rawSubFilters.isEmpty => FieldKey.eval(fk).map { fns =>
+      case RawTermAggregationFilter(name,(op,fk),size,rawSubFilters) if rawSubFilters.isEmpty => FieldKey.eval(fk,cache,cmwellRDFHelper).map { fns =>
         fns.map { fn =>
           val uname = {
             if(fns.size == 1) name
@@ -311,8 +312,8 @@ package object wsutil extends LazyLogging {
         }(lbo)
       }
       case RawHistogramAggregationFilter(name,(op,fk),interval,minDocCount,extMin,extMax,rawSubFilters) if rawSubFilters.nonEmpty => {
-        val ff = FieldKey.eval(fk)
-        Future.traverse(rawSubFilters)(eval).flatMap { subFilters =>
+        val ff = FieldKey.eval(fk,cache,cmwellRDFHelper)
+        Future.traverse(rawSubFilters)(eval(_,cache,cmwellRDFHelper)).flatMap { subFilters =>
           ff.map { fns =>
             fns.map { fn =>
               val uname = {
@@ -324,7 +325,7 @@ package object wsutil extends LazyLogging {
           }
         }
       }
-      case RawHistogramAggregationFilter(name,(op,fk),interval,minDocCount,extMin,extMax,rawSubFilters) if rawSubFilters.isEmpty => FieldKey.eval(fk).map { fns =>
+      case RawHistogramAggregationFilter(name,(op,fk),interval,minDocCount,extMin,extMax,rawSubFilters) if rawSubFilters.isEmpty => FieldKey.eval(fk,cache,cmwellRDFHelper).map { fns =>
         fns.map { fn =>
           val uname = {
             if(fns.size == 1) name
@@ -334,8 +335,8 @@ package object wsutil extends LazyLogging {
         }(lbo)
       }
       case RawSignificantTermsAggregationFilter(name,(op,fk),None,minDocCount,size,rawSubFilters) if rawSubFilters.nonEmpty => {
-        val ff = FieldKey.eval(fk)
-        Future.traverse(rawSubFilters)(eval).flatMap { subFilters =>
+        val ff = FieldKey.eval(fk,cache,cmwellRDFHelper)
+        Future.traverse(rawSubFilters)(eval(_,cache,cmwellRDFHelper)).flatMap { subFilters =>
           ff.map { fns =>
             fns.map { fn =>
               val uname = {
@@ -347,7 +348,7 @@ package object wsutil extends LazyLogging {
           }
         }
       }
-      case RawSignificantTermsAggregationFilter(name,(op,fk),None,minDocCount,size,rawSubFilters) if rawSubFilters.isEmpty => FieldKey.eval(fk).map { fns =>
+      case RawSignificantTermsAggregationFilter(name,(op,fk),None,minDocCount,size,rawSubFilters) if rawSubFilters.isEmpty => FieldKey.eval(fk,cache,cmwellRDFHelper).map { fns =>
         fns.map { fn =>
           val uname = {
             if(fns.size == 1) name
@@ -358,7 +359,7 @@ package object wsutil extends LazyLogging {
       }
       //TODO: backgroundTerms should also be unevaluated FieldKey. need to fix the parser.
       case RawSignificantTermsAggregationFilter(_,_,Some(_),_,_,_) => ???
-      case RawCardinalityAggregationFilter(name, (op,fk),precisionThreshold) => FieldKey.eval(fk).map { fns =>
+      case RawCardinalityAggregationFilter(name, (op,fk),precisionThreshold) => FieldKey.eval(fk,cache,cmwellRDFHelper).map { fns =>
         fns.map { fn =>
           val uname = {
             if(fns.size == 1) name
@@ -374,17 +375,17 @@ package object wsutil extends LazyLogging {
   trait NsPattern
 
   case class HashedNsPattern(hash: String) extends NsPattern
-  trait ResolvedNsPattern extends NsPattern {def resolve: Future[String]}
+  trait ResolvedNsPattern extends NsPattern {def resolve(cmwellRDFHelper: CMWellRDFHelper): Future[String]}
   case class NsUriPattern(nsUri: String)   extends ResolvedNsPattern {
-    override def resolve = CMWellRDFHelper.urlToHashAsync(nsUri)
+    override def resolve(cmwellRDFHelper: CMWellRDFHelper) = cmwellRDFHelper.urlToHashAsync(nsUri)
   }
   case class PrefixPattern(prefix: String) extends ResolvedNsPattern {
-    override def resolve = CMWellRDFHelper.getUrlAndLastForPrefixAsync(prefix).map(_._2)
+    override def resolve(cmwellRDFHelper: CMWellRDFHelper) = cmwellRDFHelper.getUrlAndLastForPrefixAsync(prefix).map(_._2)
   }
 
   case object JokerPattern                       extends FieldPattern
   case class NsWildCard(nsPattern: NsPattern)    extends FieldPattern
-  case class FieldKeyPattern(fieldKey: FieldKey) extends FieldPattern
+  case class FieldKeyPattern(fieldKey: Either[UnresolvedFieldKey,DirectFieldKey]) extends FieldPattern
 
   case class FilteredField[FP <: FieldPattern](fieldPattern: FP, rawFieldFilterOpt: Option[RawFieldFilter])
   case class LevelExpansion(filteredFields: List[FilteredField[FieldPattern]])
@@ -397,22 +398,22 @@ package object wsutil extends LazyLogging {
   case class PathsExpansion(paths: List[PathExpansion])
 
   //Some convenience methods & types
-  def getByPath(path: String): Future[Infoton] = CRUDServiceFS.irwService.readPathAsync(path, CRUDServiceFS.level).map(_.getOrElse(GhostInfoton(path)))
+  def getByPath(path: String, crudServiceFS: CRUDServiceFS, nbg: Boolean): Future[Infoton] = crudServiceFS.irwService(nbg).readPathAsync(path, crudServiceFS.level).map(_.getOrElse(GhostInfoton(path)))
   type F[X] = (X,Option[List[RawFieldFilter]])
   type EFX = Either[F[Future[Infoton]],F[Infoton]]
 
-  def filterByRawFieldFiltersTupled(tuple: (Infoton,Option[List[RawFieldFilter]])): Future[Boolean] = tuple match {
+  def filterByRawFieldFiltersTupled(cache: PassiveFieldTypesCache,cmwellRDFHelper: CMWellRDFHelper)(tuple: (Infoton,Option[List[RawFieldFilter]])): Future[Boolean] = tuple match {
     case (i,None) => Future.successful(true)
-    case (i,Some(filters)) => filterByRawFieldFilters(i,filters)
+    case (i,Some(filters)) => filterByRawFieldFilters(cache,cmwellRDFHelper)(i,filters)
   }
 
-  def filterByRawFieldFilters(infoton: Infoton, filters: List[RawFieldFilter]): Future[Boolean] = {
+  def filterByRawFieldFilters(cache: PassiveFieldTypesCache,cmwellRDFHelper: CMWellRDFHelper)(infoton: Infoton, filters: List[RawFieldFilter]): Future[Boolean] = {
 
     val p = Promise[Boolean]()
 
     val futures = for {
       filter <- filters
-      future = filterByRawFieldFilter(infoton,filter)
+      future = filterByRawFieldFilter(infoton,filter,cache,cmwellRDFHelper)
     } yield future.andThen {
       case Success(true) if !p.isCompleted => p.trySuccess(true)
     }
@@ -445,18 +446,20 @@ package object wsutil extends LazyLogging {
 //    }
 //  }
 
-  def filterByRawFieldFilter(infoton: Infoton, filter: RawFieldFilter): Future[Boolean] =
-    RawFieldFilter.eval(filter).map(_.filter(infoton).value)
+  def filterByRawFieldFilter(infoton: Infoton, filter: RawFieldFilter, cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper): Future[Boolean] =
+    RawFieldFilter.eval(filter,cache,cmwellRDFHelper).map(_.filter(infoton).value)
 
   def expandIn(filteredFields: List[FilteredField[FieldPattern]],
-                 infotonsToExpand: Seq[Infoton],
-                 infotonsRetrievedCache: Map[String, Infoton]): Future[(Seq[Infoton],Seq[Infoton])] = {
+               infotonsToExpand: Seq[Infoton],
+               infotonsRetrievedCache: Map[String, Infoton],
+               cmwellRDFHelper: CMWellRDFHelper,
+               cache: PassiveFieldTypesCache,
+               nbg: Boolean): Future[(Seq[Infoton],Seq[Infoton])] = {
     val expansionFuncsFut = Future.traverse(filteredFields) {
       case FilteredField(JokerPattern, rffo) => Future.successful({ (internalFieldName: String) => true } -> rffo)
-      case FilteredField(FieldKeyPattern(dfk: DirectFieldKey), rffo) => Future.successful({ (internalFieldName: String) => internalFieldName == dfk.internal } -> rffo)
-      case FilteredField(FieldKeyPattern(rfk: ResolvedFieldKey), rffo) => rfk.internalKey.map(resolvedFieldName => { (internalFieldName: String) => internalFieldName == resolvedFieldName } -> rffo)
+      case FilteredField(FieldKeyPattern(rfk: FieldKey), rffo) => Future.successful((rfk.internalKey == _,rffo))
       case FilteredField(NsWildCard(HashedNsPattern(hash)), rffo) => Future.successful({ (internalFieldName: String) => internalFieldName.endsWith(s".$hash") } -> rffo)
-      case FilteredField(NsWildCard(rnp: ResolvedNsPattern), rffo) => rnp.resolve.map(hash => { (internalFieldName: String) => internalFieldName.endsWith(s".$hash") } -> rffo)
+      case FilteredField(NsWildCard(rnp: ResolvedNsPattern), rffo) => rnp.resolve(cmwellRDFHelper).map(hash => { (internalFieldName: String) => internalFieldName.endsWith(s".$hash") } -> rffo)
     }
     expansionFuncsFut.flatMap { funs =>
 
@@ -488,7 +491,7 @@ package object wsutil extends LazyLogging {
       // get infotons from either `infotonsRetrievedCache` or from cassandra, and pair with filters option
       val (l, r) = partitionWith(pathToFiltersMap) {
         case (path, rffso) => {
-          infotonsRetrievedCache.get(path).fold[EFX](Left(getByPath(path) -> rffso)){
+          infotonsRetrievedCache.get(path).fold[EFX](Left(getByPath(path,cmwellRDFHelper.crudServiceFS,nbg) -> rffso)){
             i => Right(i -> rffso)
           }
         }
@@ -498,7 +501,7 @@ package object wsutil extends LazyLogging {
       val lInfotonsFut = Future.traverse(l) {
         case (fi, None) => fi.map(Some.apply)
         case (fi, Some(filters)) => fi.flatMap {
-          case i => filterByRawFieldFilters(i, filters).map {
+          case i => filterByRawFieldFilters(cache,cmwellRDFHelper)(i, filters).map {
             case true => Some(i)
             case false => None
           }
@@ -507,7 +510,7 @@ package object wsutil extends LazyLogging {
 
       // also filter the infotons retrieved from "cache"
       val rInfotonsFut = Future.traverse(r) {
-        case t@(i, _) => filterByRawFieldFiltersTupled(t).map {
+        case t@(i, _) => filterByRawFieldFiltersTupled(cache,cmwellRDFHelper)(t).map {
           case true => Some(i)
           case false => None
         }
@@ -519,13 +522,13 @@ package object wsutil extends LazyLogging {
   }
 
 
-  def deepExpandGraph(xgPattern: String, infotons: Seq[Infoton]): Future[(Boolean,Seq[Infoton])] = {
+  def deepExpandGraph(xgPattern: String, infotons: Seq[Infoton],cmwellRDFHelper: CMWellRDFHelper,cache: PassiveFieldTypesCache,nbg: Boolean): Future[(Boolean,Seq[Infoton])] = {
 
     def expandDeeper(expanders: List[LevelExpansion], infotonsToExpand: Seq[Infoton], infotonsRetrievedCache: Map[String, Infoton]): Future[(Boolean,Seq[Infoton])] = expanders match {
       case Nil => Future.successful(true -> infotonsRetrievedCache.values.filterNot(_.isInstanceOf[GhostInfoton]).toSeq)
       case f :: fs if infotonsRetrievedCache.size > Settings.expansionLimit => Future.successful(false -> infotonsRetrievedCache.values.toSeq)
       case f :: fs => {
-        expandIn(f.filteredFields,infotonsToExpand,infotonsRetrievedCache).flatMap {
+        expandIn(f.filteredFields,infotonsToExpand,infotonsRetrievedCache,cmwellRDFHelper,cache,nbg).flatMap {
           case (lInfotons,rInfotons) => 
             expandDeeper(fs, 
               lInfotons ++ rInfotons, 
@@ -544,7 +547,7 @@ package object wsutil extends LazyLogging {
     }
   }
 
-  def pathExpansionParser(ygPattern: String, infotons: Seq[Infoton], chunkSize: Int): Future[(Boolean,Seq[Infoton])] = {
+  def pathExpansionParser(ygPattern: String, infotons: Seq[Infoton], chunkSize: Int, cmwellRDFHelper: CMWellRDFHelper, typesCache: PassiveFieldTypesCache, nbg: Boolean): Future[(Boolean,Seq[Infoton])] = {
 
     type Expander = (DirectedExpansion,List[DirectedExpansion],Seq[Infoton])
 
@@ -553,24 +556,56 @@ package object wsutil extends LazyLogging {
                   cache: Map[String, Infoton]): Future[(Seq[Infoton],Seq[Infoton])] = {
 
 
+
        def mkFieldFilters2(ff: FilteredField[FieldKeyPattern], outerFieldOperator: FieldOperator, urls: List[String]): Future[FieldFilter] = {
-           val FilteredField(FieldKeyPattern(fk),rffo) = ff
-           val filterFut: Future[FieldFilter] = fk.internalKey.map { internalFieldName =>
-             urls match {
-               case Nil => throw new IllegalStateException(s"empty urls in expandUp($filteredFields,population[size=${population.size}],cache[size=${cache.size}])\nfor pattern: $ygPattern\nand infotons.take(3) = ${infotons.take(3).mkString("[", ",", "]")}")
-               case url :: Nil => SingleFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), Equals, internalFieldName, Some(url))
-               case _ => {
-                 val shoulds = urls.map(url => SingleFieldFilter(Should, Equals, internalFieldName, Some(url)))
-                 MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), shoulds)
-               }
-             }
+
+         def shoulds(url: String, fieldsSet: Set[String], rffo: Option[RawFieldFilter]): List[FieldFilter] = fieldsSet.map { internalKey =>
+           SingleFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), Equals, internalKey, Some(url))
+         }(breakOut)
+
+         val FilteredField(FieldKeyPattern(fk), rffo) = ff
+         val internalFieldNames = FieldKey.eval(fk, typesCache, cmwellRDFHelper)
+         val filterFut: Future[FieldFilter] = urls match {
+           case Nil => throw new IllegalStateException(s"empty urls in expandUp($filteredFields,population[size=${population.size}],cache[size=${cache.size}])\nfor pattern: $ygPattern\nand infotons.take(3) = ${infotons.take(3).mkString("[", ",", "]")}")
+           case url :: Nil => internalFieldNames.map { fieldsSet =>
+             MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), shoulds(url,fieldsSet,rffo))
            }
-           rffo.fold[Future[FieldFilter]](filterFut) { rawFilter =>
-             RawFieldFilter.eval(rawFilter).flatMap { filter =>
-               filterFut.map(ff => MultiFieldFilter(outerFieldOperator, List(ff, filter)))
+           case _ => internalFieldNames.map { fieldsSet =>
+             val allFilters = urls.foldLeft(List.empty[FieldFilter]) {
+               case (accumolatedFieldFilters, url) => shoulds(url, fieldsSet, rffo).foldLeft(accumolatedFieldFilters)(_.::(_))
              }
+             MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), allFilters)
            }
          }
+
+         rffo.fold[Future[FieldFilter]](filterFut) { rawFilter =>
+           RawFieldFilter.eval(rawFilter, typesCache, cmwellRDFHelper).flatMap { filter =>
+             filterFut.map(ff => MultiFieldFilter(outerFieldOperator, List(ff, filter)))
+           }
+         }
+       }
+
+//       def mkFieldFilters2(ff: FilteredField[FieldKeyPattern], outerFieldOperator: FieldOperator, urls: List[String]): Future[FieldFilter] = {
+//         val FilteredField(FieldKeyPattern(fk), rffo) = ff
+//         val fFilter: FieldFilter = fk match {
+//           case Right(dfk) => urlsToFieldFilter(urls, rffo, outerFieldOperator, dfk)
+//           case unresolved => FieldKey.eval(unresolved,typesCache,cmwellRDFHelper)
+//         }
+//         rffo.fold[Future[FieldFilter]](Future.successful(fFilter)) { rawFilter =>
+//           RawFieldFilter.eval(rawFilter, typesCache, cmwellRDFHelper).map { ff =>
+//             MultiFieldFilter(outerFieldOperator, List(fFilter, ff))
+//           }
+//         }
+//       }
+//
+//       def urlsToFieldFilter(urls: List[String], rffo: Option[RawFieldFilter], outerFieldOperator: FieldOperator, fk: FieldKey): FieldFilter = urls match {
+//         case Nil => throw new IllegalStateException(s"empty urls in expandUp($filteredFields,population[size=${population.size}],cache[size=${cache.size}])\nfor pattern: $ygPattern\nand infotons.take(3) = ${infotons.take(3).mkString("[", ",", "]")}")
+//         case url :: Nil => SingleFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), Equals, fk.internalKey, Some(url))
+//         case _ => {
+//           val shoulds = urls.map(url => SingleFieldFilter(Should, Equals, fk.internalKey, Some(url)))
+//           MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), shoulds)
+//         }
+//       }
 
        Future.traverse(population.grouped(chunkSize)) { infotonsChunk =>
          val urls: List[String] = infotonsChunk.map(i => pathToUri(i.path))(breakOut)
@@ -580,16 +615,17 @@ package object wsutil extends LazyLogging {
            case _ => Future.traverse(filteredFields)(mkFieldFilters2(_,Should,urls)).map(MultiFieldFilter(Must,_))
          }
          fieldFilterFut.flatMap{ffs =>
-           CRUDServiceFS.thinSearch(None,
+           cmwellRDFHelper.crudServiceFS.thinSearch(None,
              Some(ffs),
              None,
              PaginationParams(0, Settings.expansionLimit),
              withHistory = false,
              NullSortParam,
+             debugInfo = false,
              withDeleted = false,
-             debugInfo = false).flatMap(sr => {
+             nbg = nbg).flatMap(sr => {
              val (inCache, toFetch) = sr.thinResults.partition(i => cache.contains(i.path))
-             CRUDServiceFS.getInfotonsByUuidAsync(toFetch.map(_.uuid)).map {
+             cmwellRDFHelper.crudServiceFS.getInfotonsByUuidAsync(toFetch.map(_.uuid),nbg).map {
                _ -> inCache.map(i => cache(i.path))
              }
            })
@@ -618,7 +654,7 @@ package object wsutil extends LazyLogging {
       else if (cache.count(!_._2.isInstanceOf[GhostInfoton]) > Settings.expansionLimit) Future.successful(false -> cache.values.toSeq)
       else Future.traverse(expanders) {
         case None => Future.successful(None -> Seq.empty)
-        case Some((ExpandIn(ffs), tail, population)) => expandIn(ffs, population, cache).map(newPop => adjustResults(newPop, tail))
+        case Some((ExpandIn(ffs), tail, population)) => expandIn(ffs, population, cache, cmwellRDFHelper, typesCache, nbg).map(newPop => adjustResults(newPop, tail))
         case Some((ExpandUp(ffs), tail, population)) => expandUp(ffs, population, cache).map(newPop => adjustResults(newPop, tail))
       }.flatMap { expanderRetrievedInfotonPairs =>
 
@@ -677,13 +713,13 @@ package object wsutil extends LazyLogging {
     status(Json.obj("success" -> false, "error" -> eHandler(throwable)))
   }
 
-  def extractFieldsMask(req: Request[_])(implicit ec: ExecutionContext): Future[Set[String]] = {
-    extractFieldsMask(req.getQueryString("fields"))
+  def extractFieldsMask(req: Request[_],cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[Set[String]] = {
+    extractFieldsMask(req.getQueryString("fields"),cache,cmwellRDFHelper)
   }
 
-  def extractFieldsMask(fieldsOpt: Option[String])(implicit ec: ExecutionContext): Future[Set[String]] = {
+  def extractFieldsMask(fieldsOpt: Option[String],cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[Set[String]] = {
     fieldsOpt.map(FieldNameConverter.toActualFieldNames) match {
-      case Some(Success(fields)) => Future.traverse(fields)(FieldKey.eval).map(_.reduce(_ | _)) //(scala.collection.breakOut[Seq[FieldKey],String,Set[String]],ec)
+      case Some(Success(fields)) => Future.traverse(fields)(FieldKey.eval(_,cache,cmwellRDFHelper)).map(_.reduce(_ | _))
       case Some(Failure(e)) => Future.failed(e)
       case None => Future.successful(Set.empty[String])
     }
