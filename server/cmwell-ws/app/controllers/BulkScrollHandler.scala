@@ -34,6 +34,7 @@ import scala.concurrent._
 import scala.util.{Failure, Success}
 import com.typesafe.scalalogging.LazyLogging
 import cmwell.syntaxutils._
+import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.ws.Streams.Flows
 import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 import play.api.http.Writeable
@@ -45,7 +46,8 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
                                   nCache: NbgPassiveFieldTypesCache,
                                   oCache: ObgPassiveFieldTypesCache,
                                   tbg: NbgToggler,
-                                  streams: Streams) extends play.api.mvc.Controller with LazyLogging with TypeHelpers {
+                                  streams: Streams,
+                                  cmwellRDFHelper: CMWellRDFHelper) extends play.api.mvc.Controller with LazyLogging with TypeHelpers {
 
   def cache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
 
@@ -368,7 +370,7 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
   def parseQpFromRequest(qp: String, nbg: Boolean)(implicit ec: ExecutionContext): Future[Option[FieldFilter]] = {
     FieldFilterParser.parseQueryParams(qp) match {
       case Failure(err) => Future.failed(err)
-      case Success(rff) => RawFieldFilter.eval(rff,cache(nbg)).map(Option.apply)
+      case Success(rff) => RawFieldFilter.eval(rff,cache(nbg),cmwellRDFHelper).map(Option.apply)
     }
   }
 

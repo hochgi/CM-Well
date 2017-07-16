@@ -101,7 +101,7 @@ object RawFieldFilter extends PrefixRequirement {
   private[this] val bo2 = scala.collection.breakOut[Set[String],FieldFilter,Vector[FieldFilter]]
   def eval(rff: RawFieldFilter, cache: PassiveFieldTypesCache,cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[FieldFilter] = rff match {
     case UnevaluatedQuadFilter(fo,vo,alias) => {
-      val fieldFilterWithExplicitUrlOpt = cmwellRDFHelper.getQuadUrlForAlias(alias).map(v => RawSingleFieldFilter(fo, vo, Right(NnFieldKey("system.quad")), Some(v)))
+      val fieldFilterWithExplicitUrlOpt = cmwellRDFHelper.getQuadUrlForAlias(alias).map(v => SingleFieldFilter(fo, vo, "system.quad", Some(v)))
       prefixRequirement(fieldFilterWithExplicitUrlOpt.nonEmpty, s"The alias '$alias' provided for quad in search does not exist. Use explicit quad URL, or register a new alias using `graphAlias` meta operation.")
       Future.successful(fieldFilterWithExplicitUrlOpt.get)
     }

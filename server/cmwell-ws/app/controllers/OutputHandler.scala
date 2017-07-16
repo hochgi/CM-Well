@@ -36,6 +36,8 @@ import javax.inject._
 
 import akka.stream.scaladsl.Flow
 import cmwell.util.FullBox
+import cmwell.web.ld.cmw.CMWellRDFHelper
+import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
@@ -49,8 +51,16 @@ import scala.util.{Failure, Success, Try}
  * To change this template use File | Settings | File Templates.
  */
 @Singleton
-class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS, authUtils: AuthUtils) extends Controller with LazyLogging with TypeHelpers {
+class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
+                               authUtils: AuthUtils,
+                               nCache: NbgPassiveFieldTypesCache,
+                               oCache: ObgPassiveFieldTypesCache,
+                               tbg: NbgToggler,
+                               cmwellRDFHelper: CMWellRDFHelper) extends Controller with LazyLogging with TypeHelpers {
+
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
+
+  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
 
   def overrideMimetype(default: String, req: Request[AnyContent]): (String, String) = req.getQueryString("override-mimetype") match {
     case Some(mimetype) => (CONTENT_TYPE, mimetype)
@@ -157,7 +167,8 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS, authUtils: AuthUtil
     else
       RequestMonitor.add("out",req.path, req.rawQueryString, req.body.asText.getOrElse(""))
 
-    val fieldsMaskFut = extractFieldsMask(req)
+    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
+    val fieldsMaskFut = extractFieldsMask(req,typesCache(nbg),cmwellRDFHelper)
 
     val formatType = format match {
       case FormatExtractor(ft) => ft
@@ -203,6 +214,8 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS, authUtils: AuthUtil
 
   def futureRetrievablePathsFromPathsAsLines(pathsVector: Vector[String], req: Request[AnyContent]) = {
 
+    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
+
     val (byUuid, byPath) = pathsVector.partition(_.startsWith("/ii/")) match {
       case (xs, ys) => (xs.map(_.drop(4)), ys) // "/ii/".length = 4
     }
@@ -211,7 +224,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS, authUtils: AuthUtil
       case BagOfInfotons(coreInfotons) => {
         val eInfotons = req.getQueryString("yg") match {
           case None => Future.successful(true -> coreInfotons)
-          case Some(ygp) => Try(wsutil.pathExpansionParser(ygp, coreInfotons, req.getQueryString("yg-chunk-size").flatMap(asInt).getOrElse(10))) match {
+          case Some(ygp) => Try(wsutil.pathExpansionParser(ygp, coreInfotons, req.getQueryString("yg-chunk-size").flatMap(asInt).getOrElse(10),cmwellRDFHelper,typesCache(nbg),nbg)) match {
             case Success(f) => f
             case Failure(e) => Future.failed(e)
           }
@@ -220,7 +233,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS, authUtils: AuthUtil
         val fInfotons = eInfotons.flatMap {
           case (true,ygExpandedInfotons) => req.getQueryString("xg") match {
             case None => Future.successful(true -> ygExpandedInfotons)
-            case Some(xgp) => Try(wsutil.deepExpandGraph(xgp, ygExpandedInfotons)) match {
+            case Some(xgp) => Try(wsutil.deepExpandGraph(xgp, ygExpandedInfotons,cmwellRDFHelper,typesCache(nbg),nbg)) match {
               case Success(f) => f
               case Failure(e) => Future.failed(e)
             }

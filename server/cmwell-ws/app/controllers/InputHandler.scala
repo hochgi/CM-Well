@@ -60,8 +60,12 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
 //  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
 //  def typesCache(req: Request[_]) = if(req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false) || tbg.get) nCache else oCache
 
-  object aggregateBothOldAndNewTypesCaches {
-    def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = {
+  object aggregateBothOldAndNewTypesCaches extends PassiveFieldTypesCache with LazyLogging {
+
+    def crudServiceFS: CRUDServiceFS = crudServiceFS
+    def nbg: Boolean = tbg.get
+
+    override def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = {
       val fo = oCache.get(fieldKey, forceUpdateForType)
       val fn = nCache.get(fieldKey, forceUpdateForType)
       for {
@@ -70,7 +74,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
       } yield o union n
     }
 
-    def update(fieldKey: FieldKey, types: Set[Char])(implicit ec: ExecutionContext): Future[Unit] = {
+    override def update(fieldKey: FieldKey, types: Set[Char])(implicit ec: ExecutionContext): Future[Unit] = {
       val fo = oCache.update(fieldKey, types)
       val fn = nCache.update(fieldKey, types)
       for {
@@ -133,7 +137,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                   val escapedPath = escapePath(path)
                   InfotonValidator.validateValueSize(fields)
                   val fs = fields.map {
-                    case (fk, vs) => fk.internal -> vs
+                    case (fk, vs) => fk.internalKey -> vs
                   }
                   infotonFromMaps(cmwHostsSet, escapedPath, Some(fs), metaDataMap.get(escapedPath))
                 }
@@ -275,7 +279,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                       case (iPath, fMap) => prependSlash(iPath) -> fMap.map {
                         case (fk, vs) =>
                           val deleteValues: Option[Set[FieldValue]] = Some(vs.map(fv => FNull(fv.quad)))
-                          fk.internal -> deleteValues
+                          fk.internalKey -> deleteValues
                       }
                     }
                   }
@@ -293,7 +297,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                       }
                     }
 
-                    deleteMap = infotonsMap map { case (iPath, fMap) => prependSlash(iPath) -> fMap.map { case (fk, _) => fk.internal -> Some(Set(quadForReplacement)) } }
+                    deleteMap = infotonsMap map { case (iPath, fMap) => prependSlash(iPath) -> fMap.map { case (fk, _) => fk.internalKey -> Some(Set(quadForReplacement)) } }
                   }
                   _ => true //in case of "replace-mode", we want to update every field provided
                 }
@@ -309,7 +313,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                 val escapedPath = escapePath(path)
                 InfotonValidator.validateValueSize(fields)
                 val fs = fields.map {
-                  case (fk, vs) => fk.internal -> vs
+                  case (fk, vs) => fk.internalKey -> vs
                 }
                 infotonFromMaps(cmwHostsSet, escapedPath, Some(fs), metaDataMap.get(escapedPath))
               }
@@ -321,7 +325,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                 val escapedPath = escapePath(path)
                 InfotonValidator.validateValueSize(fields)
                 val fs = fields.map {
-                  case (fk, vs) => fk.internal -> vs
+                  case (fk, vs) => fk.internalKey -> vs
                 }
                 infotonFromMaps(cmwHostsSet, escapedPath, Some(fs), metaDataMap.get(escapedPath))
               }
@@ -451,13 +455,16 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                       val infotonsMap = v.collect {
                         case i if i.fields.isDefined => i.path -> i.fields.get.map{
                           case (fieldName,valueSet) => (FieldKeyParser.fieldKey(fieldName) match {
-                            case Success(d: DirectFieldKey) => d
-                            case Success(r: ResolvedFieldKey) => {
-                              Try[DirectFieldKey]{
-                                val (f, l) = Await.result(r.firstLast, 10.seconds)
-                                HashedFieldKey(f,l)
+                            case Success(Right(d)) => d
+                            case Success(Left(fk)) => {
+                              Try[DirectFieldKey] {
+                                val (f, l) = Await.result(FieldKey.resolve(fk, cmwellRDFHelper).map {
+                                  case PrefixFieldKey(first, last, _) => first -> last
+                                  case URIFieldKey(first, last, _) => first -> last
+                                }, 10.seconds)
+                                HashedFieldKey(f, l)
                               }.recover{
-                                case _ if r.isInstanceOf[PrefixFieldKey] => NnFieldKey(r.externalKey)
+                                case _ if fk.isInstanceOf[PrefixFieldKey] => NnFieldKey(fk.externalKey)
                               }.get
                             }
                             case Failure(e) => throw e
