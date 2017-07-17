@@ -53,15 +53,13 @@ import scala.util.{Failure, Success, Try}
 @Singleton
 class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
                                authUtils: AuthUtils,
-                               nCache: NbgPassiveFieldTypesCache,
-                               oCache: ObgPassiveFieldTypesCache,
                                tbg: NbgToggler,
                                cmwellRDFHelper: CMWellRDFHelper,
                                formatterManager: FormatterManager) extends Controller with LazyLogging with TypeHelpers {
 
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
-  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
+  def typesCache(nbg: Boolean) = if(nbg || tbg.get) crudServiceFS.nbgPassiveFieldTypesCache else crudServiceFS.obgPassiveFieldTypesCache
 
   def overrideMimetype(default: String, req: Request[AnyContent]): (String, String) = req.getQueryString("override-mimetype") match {
     case Some(mimetype) => (CONTENT_TYPE, mimetype)

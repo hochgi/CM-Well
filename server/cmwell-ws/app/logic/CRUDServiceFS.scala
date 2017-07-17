@@ -49,6 +49,7 @@ import scala.util.{Failure, Success}
 import javax.inject._
 
 import controllers.NbgToggler
+import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 
 @Singleton
 class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) extends LazyLogging {
@@ -57,6 +58,8 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
 
   def newBG = tbg.get
 
+  lazy val nbgPassiveFieldTypesCache = new NbgPassiveFieldTypesCache(this)
+  lazy val obgPassiveFieldTypesCache = new ObgPassiveFieldTypesCache(this)
   val level: ConsistencyLevel = ONE
   // create state object in read only
   val impState = TLogState("imp", updatesTLogName, updatesTLogPartition, true)

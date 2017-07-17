@@ -105,8 +105,6 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
                             activeInfotonGenerator: ActiveInfotonGenerator,
                             cachedSpa: CachedSpa,
                             crudServiceFS: CRUDServiceFS,
-                            nCache: NbgPassiveFieldTypesCache,
-                            oCache: ObgPassiveFieldTypesCache,
                             tbg: NbgToggler,
                             streams: Streams,
                             authUtils: AuthUtils,
@@ -115,6 +113,8 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
 
   import ApplicationUtils._
 
+  val nCache: NbgPassiveFieldTypesCache = crudServiceFS.nbgPassiveFieldTypesCache
+  val oCache: ObgPassiveFieldTypesCache = crudServiceFS.obgPassiveFieldTypesCache
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
   def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache

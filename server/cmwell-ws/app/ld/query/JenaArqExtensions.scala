@@ -19,6 +19,7 @@ package cmwell.web.ld.query
 import java.util
 import java.util.concurrent.TimeUnit
 import java.util.function.{Function, Predicate}
+import javax.inject.Inject
 
 import cmwell.crashableworker.WorkerMain
 import cmwell.domain._
@@ -26,7 +27,7 @@ import cmwell.fts._
 import cmwell.syntaxutils._
 import com.google.common.cache.{CacheBuilder, CacheLoader, LoadingCache}
 import com.typesafe.scalalogging.LazyLogging
-import controllers.{JenaUtils, SpHandler}
+import controllers.{JenaUtils, NbgToggler, SpHandler}
 import ld.query.{ArqCache, JenaArqExtensionsUtils}
 import logic.CRUDServiceFS
 import org.apache.jena.graph.impl.GraphBase
@@ -82,7 +83,7 @@ class JenaArqExtensions private(nJenaArqExtensionsUtils: JenaArqExtensionsUtils,
   */
 class SortingAndMappingStageGenerator(nJenaArqExtensionsUtils: JenaArqExtensionsUtils, oJenaArqExtensionsUtils: JenaArqExtensionsUtils, original: Option[StageGenerator] = None) extends StageGenerator with LazyLogging {
   override def execute(basicPattern: BasicPattern, queryIterator: QueryIterator, ec: JenaExecutionContext): QueryIterator = {
-    val nbg = ec.getContext.get[Boolean](WorkerMain.nbgSymbol)
+    val nbg = ec.getContext.get[Boolean](JenaArqExtensionsUtils.nbgSymbol)
     val jenaArqExtensionsUtils = {
       if (nbg) nJenaArqExtensionsUtils
       else oJenaArqExtensionsUtils
@@ -213,21 +214,20 @@ trait DataFetcher {
 }
 
 class DataFetcherImpl(val config: Config, val crudServiceFS: CRUDServiceFS, val nbg: Boolean) extends DataFetcher {
-
   val chunkSize = 100
   val singleGetThreshold = 512 // must be under 1000 (because "even google...")
 }
 
-object DefaultDataFetcher extends DataFetcher {
-  def nbg: Boolean = WorkerMain.nbgToggler.get
-  def crudServiceFS: CRUDServiceFS = Option(WorkerMain.crudServiceFS) match {
-    case Some(crud) => crud
-    case None => throw new IllegalStateException("CRUDServiceFS defined in main(App) was null (lazy init crap...)")
-  }
-  def config: Config =  Config.defaultConfig
-  val chunkSize = 100
-  val singleGetThreshold = 512 // must be under 1000 (because "even google...")
-}
+//object DefaultDataFetcher extends DataFetcher {
+//  def nbg: Boolean = WorkerMain.nbgToggler.get
+//  def crudServiceFS: CRUDServiceFS = Option(WorkerMain.crudServiceFS) match {
+//    case Some(crud) => crud
+//    case None => throw new IllegalStateException("CRUDServiceFS defined in main(App) was null (lazy init crap...)")
+//  }
+//  def config: Config =  Config.defaultConfig
+//  val chunkSize = 100
+//  val singleGetThreshold = 512 // must be under 1000 (because "even google...")
+//}
 
 class NamespaceException(msg: String) extends RuntimeException(msg: String) { override def toString = msg }
 
@@ -263,8 +263,9 @@ class DatasetGraphCmWell(val host: String,
                          nbg: Boolean,
                          crudServiceFS: CRUDServiceFS,
                          arqCache: ArqCache,
-                         jenaArqExtensionsUtils: JenaArqExtensionsUtils)
-                        (implicit ec: scala.concurrent.ExecutionContext) extends DatasetGraphTriplesQuads with LazyLogging {
+                         jenaArqExtensionsUtils: JenaArqExtensionsUtils,
+                         dataFetcher: DataFetcher)
+                        (implicit ec: scala.concurrent.ExecutionContext) extends DatasetGraphTriplesQuads with LazyLogging { self =>
 
   import JenaArqExtensionsUtils.isConst
 
@@ -274,8 +275,6 @@ class DatasetGraphCmWell(val host: String,
     * and is needed to distinguish between cached values of different queries.
     */
   val queryUuid = cmwell.util.numeric.Radix64.encodeUnsigned(this.##)
-
-  val dataFetcher = new DataFetcherImpl(config, crudServiceFS, nbg)
 
   // todo keep DRY! reuse TimedRequest from SpHandler. need to refactor to combine _sp features into _sparql
   protected val relativeEpochTime = System.currentTimeMillis()

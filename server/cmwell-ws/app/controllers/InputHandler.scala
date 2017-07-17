@@ -27,7 +27,7 @@ import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.web.ld.exceptions.UnretrievableIdentifierException
 import cmwell.web.ld.util.LDFormatParser.ParsingResponse
 import cmwell.web.ld.util._
-import cmwell.ws.Settings
+import cmwell.ws.{AggregateBothOldAndNewTypesCaches, Settings}
 import cmwell.ws.util.{FieldKeyParser, TypeHelpers}
 import com.typesafe.scalalogging.LazyLogging
 import logic.{CRUDServiceFS, InfotonValidator}
@@ -35,8 +35,6 @@ import play.api.libs.json._
 import play.api.mvc._
 import security.{AuthUtils, PermissionLevel}
 import wsutil._
-import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache, PassiveFieldTypesCache}
-import org.joda.time.{DateTime, DateTimeZone}
 import javax.inject._
 
 import scala.concurrent.duration._
@@ -48,42 +46,14 @@ import scala.util._
 @Singleton
 class InputHandler @Inject() (ingestPushback: IngestPushback,
                               crudService: CRUDServiceFS,
-                              nCache: NbgPassiveFieldTypesCache,
-                              oCache: ObgPassiveFieldTypesCache,
                               tbg: NbgToggler,
                               authUtils: AuthUtils,
                               cmwellRDFHelper: CMWellRDFHelper,
                               formatterManager: FormatterManager) extends Controller with LazyLogging with TypeHelpers { self =>
 
+  val aggregateBothOldAndNewTypesCaches = new AggregateBothOldAndNewTypesCaches(crudService,tbg)
   val bo1 = collection.breakOut[List[Infoton],String,Set[String]]
   val bo2 = collection.breakOut[Vector[Infoton],String,Set[String]]
-
-//  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
-//  def typesCache(req: Request[_]) = if(req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false) || tbg.get) nCache else oCache
-
-  object AggregateBothOldAndNewTypesCaches extends PassiveFieldTypesCache with LazyLogging {
-
-    def crudServiceFS: CRUDServiceFS = crudService
-    def nbg: Boolean = tbg.get
-
-    override def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = {
-      val fo = oCache.get(fieldKey, forceUpdateForType)
-      val fn = nCache.get(fieldKey, forceUpdateForType)
-      for {
-        o <- fo
-        n <- fn
-      } yield o union n
-    }
-
-    override def update(fieldKey: FieldKey, types: Set[Char])(implicit ec: ExecutionContext): Future[Unit] = {
-      val fo = oCache.update(fieldKey, types)
-      val fn = nCache.update(fieldKey, types)
-      for {
-        o <- fo
-        n <- fn
-      } yield ()
-    }
-  }
 
   /**
    *
@@ -204,7 +174,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
     def getMetaFields(fields: Map[DirectFieldKey, Set[FieldValue]]) = collector(fields) {
       case (fk, fvs) => {
         val newTypes = fvs.map(FieldValue.prefixByType)
-        AggregateBothOldAndNewTypesCaches.get(fk,Some(newTypes)).flatMap { types =>
+        aggregateBothOldAndNewTypesCaches.get(fk,Some(newTypes)).flatMap { types =>
           val chars = newTypes diff types
           if (chars.isEmpty) Future.successful(None)
           else {
@@ -214,7 +184,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                 "though you should be aware this may result in permanent system-wide performance downgrade " +
                 "related to all the enhanced fields you supply when using `force`. " +
                 s"(failed for field: ${fk.externalKey} and type/s: [${chars.mkString(",")}] out of infotons: [${allInfotons.keySet.mkString(",")}])")
-            AggregateBothOldAndNewTypesCaches.update(fk, chars).map { _ =>
+            aggregateBothOldAndNewTypesCaches.update(fk, chars).map { _ =>
               Some(infotonFromMaps(
                 Set.empty,
                 fk.infoPath,

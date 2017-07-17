@@ -16,14 +16,16 @@
 
 package ld.query
 
+import javax.inject.Inject
 import javax.xml.datatype.XMLGregorianCalendar
 
 import cmwell.domain.{Everything, Formattable, Infoton}
 import cmwell.fts._
 import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.web.ld.query.DataFetcherImpl
+import cmwell.ws.AggregateBothOldAndNewTypesCaches
 import com.sun.org.apache.xerces.internal.jaxp.datatype.XMLGregorianCalendarImpl
-import controllers.JenaUtils
+import controllers.{JenaUtils, NbgToggler}
 import info.aduna.iteration.CloseableIteration
 import ld.cmw.PassiveFieldTypesCache
 import ld.query.TripleStore._
@@ -43,11 +45,12 @@ import wsutil.{RawFieldFilter, RawSingleFieldFilter, UnresolvedURIFieldKey}
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext}
 
-class TripleStore(dataFetcher: DataFetcherImpl, cmwellRDFHelper: CMWellRDFHelper, typesCache: PassiveFieldTypesCache) {
+class TripleStore(dataFetcher: DataFetcherImpl, cmwellRDFHelper: CMWellRDFHelper, tbg: NbgToggler) {
 
   //  private val dataFetcher = new DataFetcher(Config.defaultConfig.copy(intermediateLimit = 100000, resultsLimit = 100000))
 
   val crudServiceFS = cmwellRDFHelper.crudServiceFS
+  val typesCache = new AggregateBothOldAndNewTypesCaches(crudServiceFS,tbg)
 
   // todo only use Await.result in findTriplesByPattern. All private methods should return Future[_]
 

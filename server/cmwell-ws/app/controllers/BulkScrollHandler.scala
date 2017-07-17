@@ -43,14 +43,12 @@ import scala.math.min
 
 @Singleton
 class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
-                                  nCache: NbgPassiveFieldTypesCache,
-                                  oCache: ObgPassiveFieldTypesCache,
                                   tbg: NbgToggler,
                                   streams: Streams,
                                   cmwellRDFHelper: CMWellRDFHelper,
                                   formatterManager: FormatterManager) extends play.api.mvc.Controller with LazyLogging with TypeHelpers {
 
-  def cache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
+  def cache(nbg: Boolean) = if(nbg || tbg.get) crudServiceFS.nbgPassiveFieldTypesCache else crudServiceFS.obgPassiveFieldTypesCache
 
   //consts
   val paginationParamsForSingleResult = PaginationParams(0, 1)

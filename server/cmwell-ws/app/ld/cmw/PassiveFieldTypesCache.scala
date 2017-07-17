@@ -114,8 +114,10 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
     sb.append("]").result()
   }
 
+  protected def createActor: ActorRef
+
   //TODO: think of using a different more suitable `ExecutionContext` instead of `global`
-  private[this] val actor: ActorRef = Grid.createAnon(classOf[PassiveFieldTypesCacheActor],scala.concurrent.ExecutionContext.Implicits.global)
+  private[this] val actor: ActorRef = createActor
   private[this] val cache: Cache[String,Either[Future[Set[Char]],(Long, Set[Char])]] = CacheBuilder.newBuilder().concurrencyLevel(1).build()
 
   class PassiveFieldTypesCacheActor(updatingExecutionContext: ExecutionContext) extends Actor {
@@ -222,8 +224,16 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
   }
 }
 
-@Singleton
-class NbgPassiveFieldTypesCache @Inject()(override val crudServiceFS: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging { override val nbg = true }
+class NbgPassiveFieldTypesCache(crud: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging {
+  override val nbg = true
+  override val crudServiceFS = crud
 
-@Singleton
-class ObgPassiveFieldTypesCache @Inject()(override val crudServiceFS: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging { override val nbg = false }
+  override def createActor: ActorRef = ??? //Grid.createAnon(classOf[PassiveFieldTypesCacheActor],scala.concurrent.ExecutionContext.Implicits.global)
+}
+
+class ObgPassiveFieldTypesCache(crud: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging {
+  override val nbg = false
+  override val crudServiceFS = crud
+
+  override def createActor: ActorRef =
+}

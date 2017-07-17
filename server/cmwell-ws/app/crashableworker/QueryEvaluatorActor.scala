@@ -23,12 +23,11 @@ import akka.actor.{Actor, ActorRef, Props}
 import cmwell.ctrl.config.Jvms
 import cmwell.util.collections._
 import cmwell.web.ld.cmw.CMWellRDFHelper
-import cmwell.web.ld.query.{Config, JenaArqExtensions}
+import cmwell.web.ld.query.{Config, DataFetcher, DataFetcherImpl, JenaArqExtensions}
 import com.google.inject.{AbstractModule, Guice}
-import com.typesafe.scalalogging.{LazyLogging, Logger}
+import com.typesafe.scalalogging.LazyLogging
 import controllers._
-import k.grid.{Grid, GridConnection, GridJvm}
-import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache, PassiveFieldTypesCache}
+import k.grid.{Grid, GridConnection}
 import ld.query.{ArqCache, JenaArqExtensionsUtils}
 import ld.query.JenaArqExtensionsUtils.BakedSparqlQuery
 import logic.CRUDServiceFS
@@ -66,19 +65,17 @@ object WorkerMain extends App with LazyLogging {
   val nbgToggler = injector.getInstance(classOf[NbgToggler])
   val crudServiceFS = new CRUDServiceFS(nbgToggler)
   val cmwellRDFHelper = new CMWellRDFHelper(crudServiceFS)
-  val nPassiveFieldTypesCache = new NbgPassiveFieldTypesCache(crudServiceFS)
-  val oPassiveFieldTypesCache = new ObgPassiveFieldTypesCache(crudServiceFS)
   val nArqCache = new ArqCache(crudServiceFS,true)
   val oArqCache = new ArqCache(crudServiceFS,false)
-  val nJenaArqExtensionsUtils = new JenaArqExtensionsUtils(nArqCache, true, nPassiveFieldTypesCache, cmwellRDFHelper)
-  val oJenaArqExtensionsUtils = new JenaArqExtensionsUtils(oArqCache, false, oPassiveFieldTypesCache, cmwellRDFHelper)
+  val nDataFetcher = new DataFetcherImpl(Config.defaultConfig,crudServiceFS,true)
+  val oDataFetcher = new DataFetcherImpl(Config.defaultConfig,crudServiceFS,false)
+  val nJenaArqExtensionsUtils = new JenaArqExtensionsUtils(nArqCache, true, crudServiceFS.nbgPassiveFieldTypesCache, cmwellRDFHelper, nDataFetcher)
+  val oJenaArqExtensionsUtils = new JenaArqExtensionsUtils(oArqCache, false, crudServiceFS.obgPassiveFieldTypesCache, cmwellRDFHelper, oDataFetcher)
 
-  val nbgSymbol = org.apache.jena.sparql.util.Symbol.create("nbg")
+  lazy val jenaArqExtensions = JenaArqExtensions.get(nJenaArqExtensionsUtils,oJenaArqExtensionsUtils)
 
-  val jenaArqExtensions = JenaArqExtensions.get(nJenaArqExtensionsUtils,oJenaArqExtensionsUtils)
-
-  val nRef = Grid.create(classOf[QueryEvaluatorActor], "NQueryEvaluatorActor",true,crudServiceFS,nArqCache,nJenaArqExtensionsUtils)
-  val oRef = Grid.create(classOf[QueryEvaluatorActor], "OQueryEvaluatorActor",false,crudServiceFS,oArqCache,oJenaArqExtensionsUtils)
+  val nRef = Grid.create(classOf[QueryEvaluatorActor], "NQueryEvaluatorActor",true,crudServiceFS,nArqCache,nJenaArqExtensionsUtils, nDataFetcher)
+  val oRef = Grid.create(classOf[QueryEvaluatorActor], "OQueryEvaluatorActor",false,crudServiceFS,oArqCache,oJenaArqExtensionsUtils, oDataFetcher)
 
   Grid.system.actorOf(Props(classOf[QueryEvaluatorActorWatcher], nRef), "NQueryEvaluatorActorWatcher")
   Grid.system.actorOf(Props(classOf[QueryEvaluatorActorWatcher], oRef), "OQueryEvaluatorActorWatcher")
@@ -117,7 +114,8 @@ object QueryEvaluatorActor {
 class QueryEvaluatorActor(nbg: Boolean,
                           crudServiceFS: CRUDServiceFS,
                           arqCache: ArqCache,
-                          jenaArqExtensionsUtils: JenaArqExtensionsUtils) extends Actor with SpFileUtils {
+                          jenaArqExtensionsUtils: JenaArqExtensionsUtils,
+                          dataFetcher: DataFetcher) extends Actor with SpFileUtils {
   import QueryEvaluatorActor._
   private case class SpResponse(sender: ActorRef, queryResponse: QueryResponse)
   private case class SpFailure(sender: ActorRef, ex: Throwable)
@@ -139,11 +137,11 @@ class QueryEvaluatorActor(nbg: Boolean,
 
   private def isNeedToDelay = numActiveQueries > ACTIVE_REQUESTS_DELAY_THRESHOLD
 
-  override def receive = x()
+  override def receive = watchedReceive()
 
-  def x(watcher: Option[ActorRef] = None): Receive = {
-    case IAmYourWatcher => {
-      context.become(x(Some(sender())))
+  def watchedReceive(watcher: Option[ActorRef] = None): Receive = {
+    case /*Luke,*/ IAmYourWatcher => {
+      context.become(watchedReceive(Some(sender())))
     }
     case StatusRequest => sender ! Status(numActiveQueries) // for debugging purposes
 
@@ -182,7 +180,7 @@ class QueryEvaluatorActor(nbg: Boolean,
         case Success(sprqlQuery) => {
           val config = Config(rp.doNotOptimize, rp.intermediateLimit, rp.resultsLimit, rp.verbose, SpHandler.queryTimeout.fromNow, rp.explainOnly)
           val JenaArqExtensionsUtils.BakedSparqlQuery(queryExecution,driver) =
-            JenaArqExtensionsUtils.buildCmWellQueryExecution(sprqlQuery, host, config, nbg, crudServiceFS, arqCache, jenaArqExtensionsUtils)
+            JenaArqExtensionsUtils.buildCmWellQueryExecution(sprqlQuery, host, config, nbg, crudServiceFS, arqCache, jenaArqExtensionsUtils, dataFetcher)
 
           if (!sprqlQuery.isConstructType && !sprqlQuery.isSelectType) {
             sender() ! RemoteFailure(new IllegalArgumentException("Query Type must be either SELECT or CONSTRUCT"))
