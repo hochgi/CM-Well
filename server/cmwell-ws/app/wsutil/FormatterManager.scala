@@ -16,17 +16,70 @@
 
 package wsutil
 
+import javax.inject._
 import cmwell.domain.{Formattable, Infoton}
 import cmwell.formats._
 import cmwell.fts.{FieldFilter, FieldOperator}
-import cmwell.web.ld.cmw.{CMWellRDFHelper => C}
+import cmwell.web.ld.cmw.CMWellRDFHelper
 import com.typesafe.scalalogging.LazyLogging
 import markdown.PrettyCsvFormatter
 
-/**
- * Created by gilad on 1/13/15.
- */
-object FormatterManager extends LazyLogging {
+object FormatterManager {
+  val prettyMangledField: String => String = {
+    case s if s.length > 1 && s(1) == '$' => s.head match {
+      case 'i' => s.drop(2) + ": Int"
+      case 'l' => s.drop(2) + ": Long/BigInt"
+      case 'w' => s.drop(2) + ": Double/BigDecimal"
+      case 'b' => s.drop(2) + ": Boolean"
+      case 'd' => s.drop(2) + ": Date"
+      case 'f' => s.drop(2) + ": Float"
+    }
+    case s => s
+  }
+  def multiFormattableToSeq(formattable: Formattable, formatter: Formatter): String = {
+
+    val infotons: Seq[Infoton] = formattable match {
+      case _ => ???
+    }
+
+    formatFormattableSeq(infotons,formatter)
+  }
+
+  def formatFormattableSeq[T <: Formattable](infotons: Seq[T], formatter: Formatter): String = {
+
+    val sb = new StringBuilder()
+
+    infotons.foreach { i =>
+      val formatted = formatter.render(i) + "\n"
+      sb.append(formatted)
+    }
+
+    sb.mkString
+  }
+
+  private def getKeyForRdfFormatterMap(rdfFlavor: RdfFlavor,
+                                             host: String,
+                                             withoutMeta: Boolean,
+                                             filterOutBlanks: Boolean,
+                                             forcrUniquness: Boolean,
+                                             pretty: Boolean,
+                                             callback: Option[String]): String = {
+
+    def bool2string(b: Boolean): String = if(b) "T" else "F"
+
+    if(Set[RdfFlavor](JsonLDFlavor,JsonLDQFlavor)(rdfFlavor)){
+      s"${rdfFlavor.key}\t$host\t${bool2string(withoutMeta)}\t${bool2string(filterOutBlanks)}\t${bool2string(forcrUniquness)}\t${bool2string(pretty)}\t${callback.getOrElse("")}"
+    } else {
+      s"${rdfFlavor.key}\t$host\t${bool2string(withoutMeta)}\t${bool2string(filterOutBlanks)}\t${bool2string(forcrUniquness)}\t\t"
+    }
+  }
+}
+
+@Singleton
+class FormatterManager @Inject()(C: CMWellRDFHelper) extends LazyLogging {
+
+  import FormatterManager._
+
   //var is OK as not volatile, cache, frequent reads + rare writes of immutable object pattern (Gilad + Dudi)
   private[this] var rdfFormatterMap = Map[String, RDFFormatter]()
 
@@ -44,22 +97,13 @@ def innerToSimpleFieldName(fieldName: String): String = {
     }
   }
 
-  val prettyMangledField: String => String = {
-    case s if s.length > 1 && s(1) == '$' => s.head match {
-      case 'i' => s.drop(2) + ": Int"
-      case 'l' => s.drop(2) + ": Long/BigInt"
-      case 'w' => s.drop(2) + ": Double/BigDecimal"
-      case 'b' => s.drop(2) + ": Boolean"
-      case 'd' => s.drop(2) + ": Date"
-      case 'f' => s.drop(2) + ": Float"
-    }
-    case s => s
-  }
+
 
   JsonFormatter.init(innerToSimpleFieldName)
   PrettyJsonFormatter.init(innerToSimpleFieldName)
   YamlFormatter.init(innerToSimpleFieldName)
   val csvFormatter = CSVFormatter(prettyMangledField compose innerToSimpleFieldName)
+  val prettyCsvFormatter = new PrettyCsvFormatter(innerToSimpleFieldName)
 
   def getFormatter(format: FormatType,
                    host: String = "http://cm-well",
@@ -76,7 +120,7 @@ def innerToSimpleFieldName(fieldName: String): String = {
     format match {
       case TextType => PathFormatter
       case TsvType => TsvFormatter
-      case CsvType if pretty => PrettyCsvFormatter
+      case CsvType if pretty => prettyCsvFormatter
       case CsvType => csvFormatter
       case JsonType if pretty && callback.isDefined => new PrettyJsonFormatter(innerToSimpleFieldName,callback)
       case JsonType if pretty => PrettyJsonFormatter()
@@ -124,45 +168,6 @@ def innerToSimpleFieldName(fieldName: String): String = {
           }
         }
       }
-    }
-  }
-
-
-  def multiFormattableToSeq(formattable: Formattable, formatter: Formatter): String = {
-
-    val infotons: Seq[Infoton] = formattable match {
-      case _ => ???
-    }
-
-    formatFormattableSeq(infotons,formatter)
-  }
-
-  def formatFormattableSeq[T <: Formattable](infotons: Seq[T], formatter: Formatter): String = {
-
-    val sb = new StringBuilder()
-
-    infotons.foreach { i =>
-      val formatted = formatter.render(i) + "\n"
-      sb.append(formatted)
-    }
-
-    sb.mkString
-  }
-
-  private[this] def getKeyForRdfFormatterMap(rdfFlavor: RdfFlavor,
-                                             host: String,
-                                             withoutMeta: Boolean,
-                                             filterOutBlanks: Boolean,
-                                             forcrUniquness: Boolean,
-                                             pretty: Boolean,
-                                             callback: Option[String]): String = {
-
-    def bool2string(b: Boolean): String = if(b) "T" else "F"
-
-    if(Set[RdfFlavor](JsonLDFlavor,JsonLDQFlavor)(rdfFlavor)){
-      s"${rdfFlavor.key}\t$host\t${bool2string(withoutMeta)}\t${bool2string(filterOutBlanks)}\t${bool2string(forcrUniquness)}\t${bool2string(pretty)}\t${callback.getOrElse("")}"
-    } else {
-      s"${rdfFlavor.key}\t$host\t${bool2string(withoutMeta)}\t${bool2string(filterOutBlanks)}\t${bool2string(forcrUniquness)}\t\t"
     }
   }
 }

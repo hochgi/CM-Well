@@ -47,12 +47,13 @@ import scala.util._
 
 @Singleton
 class InputHandler @Inject() (ingestPushback: IngestPushback,
-                              crudServiceFS: CRUDServiceFS,
+                              crudService: CRUDServiceFS,
                               nCache: NbgPassiveFieldTypesCache,
                               oCache: ObgPassiveFieldTypesCache,
                               tbg: NbgToggler,
                               authUtils: AuthUtils,
-                              cmwellRDFHelper: CMWellRDFHelper) extends Controller with LazyLogging with TypeHelpers {
+                              cmwellRDFHelper: CMWellRDFHelper,
+                              formatterManager: FormatterManager) extends Controller with LazyLogging with TypeHelpers { self =>
 
   val bo1 = collection.breakOut[List[Infoton],String,Set[String]]
   val bo2 = collection.breakOut[Vector[Infoton],String,Set[String]]
@@ -60,9 +61,9 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
 //  def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
 //  def typesCache(req: Request[_]) = if(req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false) || tbg.get) nCache else oCache
 
-  object aggregateBothOldAndNewTypesCaches extends PassiveFieldTypesCache with LazyLogging {
+  object AggregateBothOldAndNewTypesCaches extends PassiveFieldTypesCache with LazyLogging {
 
-    def crudServiceFS: CRUDServiceFS = crudServiceFS
+    def crudServiceFS: CRUDServiceFS = crudService
     def nbg: Boolean = tbg.get
 
     override def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = {
@@ -147,8 +148,8 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
 
               val (metaInfotons, infotonsToPut) = allInfotons.partition(_.path.startsWith("/meta/"))
 
-              val f = crudServiceFS.putInfotons(metaInfotons)
-              crudServiceFS.putOverwrites(infotonsToPut).flatMap { b =>
+              val f = crudService.putInfotons(metaInfotons)
+              crudService.putOverwrites(infotonsToPut).flatMap { b =>
                 f.map {
                   case true if b => Ok(Json.obj("success" -> true))
                   case _ => BadRequest(Json.obj("success" -> false))
@@ -187,9 +188,12 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
       case _ => throw new RuntimeException("cant find valid content in body of request")
     }
 
+    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
+
+
     req.getQueryString("format") match {
-      case Some(f) => handleFormatByFormatParameter(bais, Some(List[String](f)), req.contentType, authUtils.extractTokenFrom(req), skipValidation, isOverwrite)
-      case None => handleFormatByContentType(bais, req.contentType, authUtils.extractTokenFrom(req), skipValidation, isOverwrite)
+      case Some(f) => handleFormatByFormatParameter(cmwellRDFHelper,crudService,authUtils,nbg,bais, Some(List[String](f)), req.contentType, authUtils.extractTokenFrom(req), skipValidation, isOverwrite)
+      case None => handleFormatByContentType(cmwellRDFHelper,crudService,authUtils,nbg,bais, req.contentType, authUtils.extractTokenFrom(req), skipValidation, isOverwrite)
     }
   }
 
@@ -200,7 +204,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
     def getMetaFields(fields: Map[DirectFieldKey, Set[FieldValue]]) = collector(fields) {
       case (fk, fvs) => {
         val newTypes = fvs.map(FieldValue.prefixByType)
-        aggregateBothOldAndNewTypesCaches.get(fk,Some(newTypes)).flatMap { types =>
+        AggregateBothOldAndNewTypesCaches.get(fk,Some(newTypes)).flatMap { types =>
           val chars = newTypes diff types
           if (chars.isEmpty) Future.successful(None)
           else {
@@ -210,7 +214,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                 "though you should be aware this may result in permanent system-wide performance downgrade " +
                 "related to all the enhanced fields you supply when using `force`. " +
                 s"(failed for field: ${fk.externalKey} and type/s: [${chars.mkString(",")}] out of infotons: [${allInfotons.keySet.mkString(",")}])")
-            aggregateBothOldAndNewTypesCaches.update(fk, chars).map { _ =>
+            AggregateBothOldAndNewTypesCaches.update(fk, chars).map { _ =>
               Some(infotonFromMaps(
                 Set.empty,
                 fk.infoPath,
@@ -367,12 +371,12 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                 require(dontTrack.forall(!atomicUpdates.contains(_)),s"atomic updates cannot operate on multiple actions in a single ingest.")
 
                 val to = tidOpt.map(_.token)
-                val d1 = crudServiceFS.deleteInfotons(dontTrack.map(_ -> None))
-                val d2 = crudServiceFS.deleteInfotons(track.map(_ -> None),to,atomicUpdates)
+                val d1 = crudService.deleteInfotons(dontTrack.map(_ -> None))
+                val d2 = crudService.deleteInfotons(track.map(_ -> None),to,atomicUpdates)
 
                 d1.zip(d2).flatMap { case (b01,b02) =>
-                  val f1 = crudServiceFS.upsertInfotons(infotonsToUpsert, deleteMap, to, atomicUpdates)
-                  val f2 = crudServiceFS.putInfotons(infotonsToPut, to, atomicUpdates)
+                  val f1 = crudService.upsertInfotons(infotonsToUpsert, deleteMap, to, atomicUpdates)
+                  val f2 = crudService.putInfotons(infotonsToPut, to, atomicUpdates)
                   f1.zip(f2).flatMap { case (b1, b2) =>
                     if (b01 && b02 && b1 && b2)
                       blocking.fold(Future.successful(Ok(Json.obj("success" -> true)).withHeaders(tidHeaderOpt.toSeq: _*))) { _ =>
@@ -380,7 +384,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                         val blockingFut = arOpt.get.?(SubscribeToDone)(timeout = 5.minutes).mapTo[Seq[PathStatus]]
                         blockingFut.map { data =>
                           val payload = {
-                            val formatter = getFormatter(req, defaultFormat = "ntriples", withoutMeta = true)
+                            val formatter = getFormatter(req, formatterManager, defaultFormat = "ntriples", withoutMeta = true)
                             val payload = BagOfInfotons(data map pathStatusAsInfoton)
                             formatter render payload
                           }
@@ -461,6 +465,9 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                                 val (f, l) = Await.result(FieldKey.resolve(fk, cmwellRDFHelper).map {
                                   case PrefixFieldKey(first, last, _) => first -> last
                                   case URIFieldKey(first, last, _) => first -> last
+                                  case unknown => {
+                                    throw new IllegalStateException(s"unknown field key [$unknown]")
+                                  }
                                 }, 10.seconds)
                                 HashedFieldKey(f, l)
                               }.recover{
@@ -484,10 +491,10 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                           case i: Infoton => i //to prevent compilation warnings...
                         } else v) ++ metaFields
                         if (req.getQueryString("replace-mode").isEmpty)
-                          crudServiceFS.putInfotons(infotonsToPut).map(b => Ok(Json.obj("success" -> b)))
+                          crudService.putInfotons(infotonsToPut).map(b => Ok(Json.obj("success" -> b)))
                         else {
                           val d: Map[String, Set[String]] = infotonsToPut collect { case i if i.fields.isDefined => prependSlash(i.path) -> i.fields.get.keySet} toMap;
-                          crudServiceFS.upsertInfotons(infotonsToPut.toList, d.mapValues(_.map(_ -> None).toMap)).map(b => Ok(Json.obj("success" -> b)))
+                          crudService.upsertInfotons(infotonsToPut.toList, d.mapValues(_.map(_ -> None).toMap)).map(b => Ok(Json.obj("success" -> b)))
                         }
                       }
                     }

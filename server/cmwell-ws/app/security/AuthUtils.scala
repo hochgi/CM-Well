@@ -30,7 +30,7 @@ import scala.concurrent.Future
 import scala.language.postfixOps
 import scala.util.Random
 
-class AuthUtils @Inject()(authCache: AuthCache, crudServiceFS: CRUDServiceFS) {
+class AuthUtils @Inject()(authCache: AuthCache, authorization: Authorization, crudServiceFS: CRUDServiceFS) {
   def changePassword(token: Token, currentPw: String, newPw: String): Future[Boolean] = {
     if(!token.isValid) {
       Future.successful(false)
@@ -72,12 +72,12 @@ class AuthUtils @Inject()(authCache: AuthCache, crudServiceFS: CRUDServiceFS) {
     tokenOpt match {
       case Some(token) if token.isValid => {
         authCache.getUserInfoton(token.username) match {
-          case Some(user) => paths.filterNot(path => Authorization.isAllowedForUser((path, level), user))
+          case Some(user) => paths.filterNot(path => authorization.isAllowedForUser((path, level), user))
           case None if token.username == "root" || token.username == "pUser" => Seq() // special case only required for cases when CRUD is not yet ready
           case None => paths
         }
       }
-      case _ => paths.filterNot(Authorization.isAllowedForAnonymousUser(_, level))
+      case _ => paths.filterNot(authorization.isAllowedForAnonymousUser(_, level))
     }
   }
 
@@ -85,7 +85,7 @@ class AuthUtils @Inject()(authCache: AuthCache, crudServiceFS: CRUDServiceFS) {
     if(!useAuthorizationParam && !evenForNonProdEnv)
       true
     else
-      getUser(token).exists(Authorization.isOperationAllowedForUser(op, _))
+      getUser(token).exists(authorization.isOperationAllowedForUser(op, _))
   }
 
   // todo rather than boolean result, one can return (deep-)filtered Seq (multitanency)
@@ -94,7 +94,7 @@ class AuthUtils @Inject()(authCache: AuthCache, crudServiceFS: CRUDServiceFS) {
       true
     } else {
       val fields = infotons.flatMap(_.fields).map(_.keySet).reduceLeft(_ ++ _)
-      getUser(token).exists(Authorization.areFieldsAllowedForUser(fields, _))
+      getUser(token).exists(authorization.areFieldsAllowedForUser(fields, _))
     }
   }
 

@@ -42,8 +42,25 @@ import scala.util.{Failure, Success, Try}
 import scala.collection.mutable.{Set => MSet}
 
 
+object CMWellRDFHelper {
+
+  class NoFallbackException extends RuntimeException("No fallback...")
+
+  sealed trait PrefixState //to perform
+  case object Create extends PrefixState
+  case object Exists extends PrefixState
+  case object Update extends PrefixState
+
+  private sealed trait ByAlg
+  private case object ByBase64 extends ByAlg
+  private case object ByCrc32 extends ByAlg
+}
+
+
 @Singleton
 class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLogging {
+
+  import CMWellRDFHelper._
 
   def loadNsCachesWith(infotons: Seq[Infoton]): Unit = infotons.foreach{ i =>
 
@@ -322,8 +339,6 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
     }
   }
 
-  class NoFallbackException extends RuntimeException("No fallback...")
-
   private[this] def getMetaNsInfotonForHash(hash: String): Future[Option[Infoton]] =
     crudServiceFS.getInfoton("/meta/ns/" + hash, None, None).map(_.map(_infoton))(scala.concurrent.ExecutionContext.Implicits.global)
 
@@ -399,10 +414,6 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
   def prefixToHash(prefix: String): Option[String] = Try(prefixToHashCache.getBlocking(prefix)).toOption
 
 
-  sealed trait PrefixState //to perform
-  case object Create extends PrefixState
-  case object Exists extends PrefixState
-  case object Update extends PrefixState
   /**
    *
    * @param url as plain string
@@ -442,13 +453,6 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
 //      }
 //    ).getOrElse(inner(crc32base64(url)))
   }
-
-
-
-  private[this] sealed trait ByAlg
-  private[this] case object ByBase64 extends ByAlg
-  private[this] case object ByCrc32 extends ByAlg
-
 
   def getAliasForQuadUrl(graphName: String): Option[String] = Try(graphToAliasCache.get(graphName)).toOption
 

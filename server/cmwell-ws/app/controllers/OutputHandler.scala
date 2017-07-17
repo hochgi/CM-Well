@@ -56,7 +56,8 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
                                nCache: NbgPassiveFieldTypesCache,
                                oCache: ObgPassiveFieldTypesCache,
                                tbg: NbgToggler,
-                               cmwellRDFHelper: CMWellRDFHelper) extends Controller with LazyLogging with TypeHelpers {
+                               cmwellRDFHelper: CMWellRDFHelper,
+                               formatterManager: FormatterManager) extends Controller with LazyLogging with TypeHelpers {
 
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
@@ -117,7 +118,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
   def handleWebSocket(format: String) = WebSocket.accept[String,String] { request =>
     val formatter = format match {
       case FormatExtractor(formatType) =>
-        FormatterManager.getFormatter(
+        formatterManager.getFormatter(
           format = formatType,
           host = request.host,
           uri = request.uri,
@@ -175,7 +176,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
       case _ => RdfType(N3Flavor)
     }
 
-    val formatter = FormatterManager.getFormatter(
+    val formatter = formatterManager.getFormatter(
       format = formatType,
       host = req.host,
       uri = req.uri,

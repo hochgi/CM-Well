@@ -47,7 +47,8 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
                                   oCache: ObgPassiveFieldTypesCache,
                                   tbg: NbgToggler,
                                   streams: Streams,
-                                  cmwellRDFHelper: CMWellRDFHelper) extends play.api.mvc.Controller with LazyLogging with TypeHelpers {
+                                  cmwellRDFHelper: CMWellRDFHelper,
+                                  formatterManager: FormatterManager) extends play.api.mvc.Controller with LazyLogging with TypeHelpers {
 
   def cache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
 
@@ -263,7 +264,7 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
             case _ => false
           })
           //cleanSystemBlanks set to true, so we won't output all the meta information we usually output. it get's messy with streaming. we don't want each chunk to show the "document context"
-          FormatterManager.getFormatter(
+          formatterManager.getFormatter(
             format = formatType,
             host = request.host,
             uri = request.uri,

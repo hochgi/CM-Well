@@ -42,9 +42,7 @@ import scala.collection.breakOut
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success}
-/**
- * Created by gilad on 6/18/14.
- */
+
 package object wsutil extends LazyLogging {
 
   /**
@@ -829,9 +827,9 @@ package object wsutil extends LazyLogging {
     VirtualInfoton(ObjectInfoton(path, Settings.dataCenter, None, fields = fields))
   }
 
-  def getFormatter(request: Request[_], defaultFormat: String, withoutMeta: Boolean = false): Formatter =
+  def getFormatter(request: Request[_], formatterManager: FormatterManager, defaultFormat: String, withoutMeta: Boolean = false): Formatter =
     request.getQueryString("format").getOrElse(defaultFormat) match {
-      case FormatExtractor(formatType) => FormatterManager.getFormatter(
+      case FormatExtractor(formatType) => formatterManager.getFormatter(
         format = formatType,
         host = request.host,
         uri = request.uri,

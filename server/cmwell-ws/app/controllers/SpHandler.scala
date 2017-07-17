@@ -59,6 +59,8 @@ import cmwell.zcache.L1Cache
 import javax.inject._
 
 import akka.NotUsed
+import cmwell.ws.util.TypeHelpers
+import cmwell.ws.util.TypeHelpers.asBoolean
 import controllers.SpHandler.logger
 import wsutil.overrideMimetype
 
@@ -73,7 +75,7 @@ import scala.util.{Failure, Random, Success, Try}
 */
 
 @Singleton
-class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends Controller with LazyLogging {
+class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS, nbgToggler: NbgToggler)(implicit ec: ExecutionContext) extends Controller with LazyLogging with TypeHelpers {
 
   val sourcesImporter = new SourcesImporter(crudServiceFS)
   val jarsImporter = new JarsImporter(crudServiceFS)
@@ -107,8 +109,9 @@ class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: E
 
             //TODO: consider using `guardHangingFutureByExpandingToSource` instead all the bloat below
             val singleEndln = Source.single(cmwell.ws.Streams.endln)
+            val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
 
-            val futureThatMayHang = if(rp.bypassCache) task(paq) else viaCache(crudServiceFS)(paq)
+            val futureThatMayHang = if(rp.bypassCache) task(nbg || nbgToggler.get)(paq) else viaCache(nbg || nbgToggler.get,crudServiceFS)(paq)
             val initialGraceTime = 7.seconds
             val injectInterval = 3.seconds
             val backOnTime: QueryResponse => Result = {
@@ -140,23 +143,28 @@ class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: E
 }
 
 object SpHandler extends LazyLogging {
-  val actorSel = Grid.selectActor("QueryEvaluatorActor", GridJvm(Jvms.CW))
+  val nActorSel = Grid.selectActor("NQueryEvaluatorActor", GridJvm(Jvms.CW))
+  val oActorSel = Grid.selectActor("OQueryEvaluatorActor", GridJvm(Jvms.CW))
   implicit val timeout = akka.util.Timeout(100.seconds)
   val queryTimeout = 90.seconds
 
-  def task[T](paq: T) = (actorSel ? paq).mapTo[QueryResponse]
+  def task[T](nbg: Boolean)(paq: T) = {
+    val actorSel = {
+      if (nbg) nActorSel
+      else oActorSel
+    }
+    (actorSel ? paq).mapTo[QueryResponse]
+  }
   def digest[T](input: T): String = cmwell.util.string.Hash.md5(input.toString)
   def deserializer(payload: Array[Byte]): QueryResponse = Plain(new String(payload, "UTF-8"))
   def serializer(qr: QueryResponse): Array[Byte] = qr match { case Plain(s) => s.getBytes("UTF-8") case _ => !!! }
   def isCachable(qr: QueryResponse): Boolean = qr match { case Plain(_) => true case _ => false }
 
-  def viaCache(crudServiceFS: CRUDServiceFS) = cmwell.zcache.l1l2(task)(digest,deserializer,serializer,isCachable)(
+  def viaCache(nbg: Boolean, crudServiceFS: CRUDServiceFS) = cmwell.zcache.l1l2(task(nbg))(digest,deserializer,serializer,isCachable)(
     ttlSeconds = Settings.zCacheSecondsTTL,
     pollingMaxRetries = Settings.zCachePollingMaxRetries,
     pollingInterval = Settings.zCachePollingIntervalSeconds,
     l1Size = Settings.zCacheL1Size)(crudServiceFS.zCache)
-
-
 }
 
 

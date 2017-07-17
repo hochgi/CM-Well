@@ -226,7 +226,7 @@ class CmWellReadOnlySailConnection @Inject()(cmWellTripleSource: CmWellTripleSou
 
 
 @Singleton
-class CmWellTripleSource @Inject()(implicit ec: ExecutionContext) extends TripleSource {
+class CmWellTripleSource @Inject()(tripleStore: TripleStore)(implicit ec: ExecutionContext) extends TripleSource {
 
   private val factory = SimpleValueFactory.getInstance()
 
@@ -245,7 +245,7 @@ class CmWellTripleSource @Inject()(implicit ec: ExecutionContext) extends Triple
     //    }
 
     val tp = TriplePattern(Option(subj).map(_.stringValue), Option(pred).map(_.stringValue), Option(obj).map(SesameExtensions.sesameValueToValue))
-    val statementsIterator = TripleStore.findTriplesByPattern(tp).map(q => factory.createStatement(factory.createIRI(q.subject), factory.createIRI(q.predicate), SesameExtensions.valueToSesameValue(q.value)))
+    val statementsIterator = tripleStore.findTriplesByPattern(tp).map(q => factory.createStatement(factory.createIRI(q.subject), factory.createIRI(q.predicate), SesameExtensions.valueToSesameValue(q.value)))
 
     new CloseableIteratorIteration(statementsIterator)
   }

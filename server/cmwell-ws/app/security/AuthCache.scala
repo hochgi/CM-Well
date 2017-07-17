@@ -24,13 +24,12 @@ import com.typesafe.scalalogging.LazyLogging
 import logic.CRUDServiceFS
 import play.api.libs.json.{JsValue, Json}
 
-import scala.concurrent.Await
-import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration._
 import scala.util.Try
 
 @Singleton
-class AuthCache @Inject()(crudServiceFS: CRUDServiceFS) extends LazyLogging {
+class AuthCache @Inject()(crudServiceFS: CRUDServiceFS)(implicit ec: ExecutionContext) extends LazyLogging {
   private val usersFolder = "/meta/auth/users"
   private val rolesFolder = "/meta/auth/roles"
 
@@ -52,8 +51,6 @@ class AuthCache @Inject()(crudServiceFS: CRUDServiceFS) extends LazyLogging {
       logger.warn(s"Trying to read $infotonPath but got from CAS $other")
       None
   }
-
-  // TODO @inject(ec), do not use Implicits.global
 
   private val usersCache = L1Cache.memoize(task = getUserFromCas)(
                                            digest = identity,

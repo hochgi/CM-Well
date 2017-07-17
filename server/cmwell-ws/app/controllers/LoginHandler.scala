@@ -24,12 +24,13 @@ import play.api.mvc._
 import security.httpauth._
 import security.{AuthCache, Authentication}
 import javax.inject._
+
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
-import scala.concurrent.ExecutionContext.Implicits.global
 
 @Singleton
-class LoginHandler  @Inject()(authCache: AuthCache) extends Controller with BasicHttpAuthentication with DigestHttpAuthentication {
+class LoginHandler  @Inject()(authCache: AuthCache)(implicit ec: ExecutionContext) extends Controller with BasicHttpAuthentication with DigestHttpAuthentication {
   private val notAuthenticated = Unauthorized("Not authenticated.\n")
 
   def login: Action[AnyContent] = Action.async { implicit req =>
@@ -39,7 +40,7 @@ class LoginHandler  @Inject()(authCache: AuthCache) extends Controller with Basi
       req.headers.get("authorization").map { h => if(h.contains("Digest")) Digest else Basic }
     }
 
-    def loginDigest = digestAuthenticate(req).map(status => if (status.isAuthenticated) grantToken(status.username, exp) else notAuthenticated)
+    def loginDigest = digestAuthenticate(authCache)(req).map(status => if (status.isAuthenticated) grantToken(status.username, exp) else notAuthenticated)
 
     def loginBasic = {
       decodeBasicAuth(req.headers("authorization")) match {

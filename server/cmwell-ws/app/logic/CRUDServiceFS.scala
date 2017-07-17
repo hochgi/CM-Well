@@ -503,38 +503,38 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
   }
 
 
-  object SearchCacheHelpers {
-
-    private val nquadsFormatter = FormatterManager.getFormatter(RdfType(NquadsFlavor))
-
-    case class SearchRequest(pathFilter: Option[PathFilter] = None,
-                             fieldFilters: Option[FieldFilter] = None,
-                             datesFilter: Option[DatesFilter] = None,
-                             paginationParams: PaginationParams = DefaultPaginationParams,
-                             withHistory: Boolean = false,
-                             withData: Boolean = false,
-                             fieldSortParams: SortParam = SortParam.empty,
-                             debugInfo: Boolean = false,
-                             withDeleted: Boolean = false) {
-      def getDigest = cmwell.util.string.Hash.md5(this.toString)
-    }
-
-
-    def wSearch(searchRequest: SearchRequest, nbg: Boolean = newBG): Future[SearchResults] = {
-      search(searchRequest.pathFilter, searchRequest.fieldFilters, searchRequest.datesFilter,
-        searchRequest.paginationParams, searchRequest.withHistory, searchRequest.withData, searchRequest.fieldSortParams,
-        searchRequest.debugInfo, searchRequest.withDeleted,nbg)
-    }
-
-    def serializer(searchResults: SearchResults): Array[Byte] =
-      nquadsFormatter.render(searchResults).getBytes("UTF-8")
-
-    def deserializer(payload: Array[Byte]): SearchResults = {
-      ???
-    }
-
-    def searchViaCache(nbg: Boolean = newBG) = cmwell.zcache.l1l2[SearchRequest,SearchResults](wSearch(_,nbg))(_.getDigest, deserializer, serializer)()(zCache)
-  }
+//  object SearchCacheHelpers {
+//
+//    private val nquadsFormatter = FormatterManager.getFormatter(RdfType(NquadsFlavor))
+//
+//    case class SearchRequest(pathFilter: Option[PathFilter] = None,
+//                             fieldFilters: Option[FieldFilter] = None,
+//                             datesFilter: Option[DatesFilter] = None,
+//                             paginationParams: PaginationParams = DefaultPaginationParams,
+//                             withHistory: Boolean = false,
+//                             withData: Boolean = false,
+//                             fieldSortParams: SortParam = SortParam.empty,
+//                             debugInfo: Boolean = false,
+//                             withDeleted: Boolean = false) {
+//      def getDigest = cmwell.util.string.Hash.md5(this.toString)
+//    }
+//
+//
+//    def wSearch(searchRequest: SearchRequest, nbg: Boolean = newBG): Future[SearchResults] = {
+//      search(searchRequest.pathFilter, searchRequest.fieldFilters, searchRequest.datesFilter,
+//        searchRequest.paginationParams, searchRequest.withHistory, searchRequest.withData, searchRequest.fieldSortParams,
+//        searchRequest.debugInfo, searchRequest.withDeleted,nbg)
+//    }
+//
+//    def serializer(searchResults: SearchResults): Array[Byte] =
+//      nquadsFormatter.render(searchResults).getBytes("UTF-8")
+//
+//    def deserializer(payload: Array[Byte]): SearchResults = {
+//      ???
+//    }
+//
+//    def searchViaCache(nbg: Boolean = newBG) = cmwell.zcache.l1l2[SearchRequest,SearchResults](wSearch(_,nbg))(_.getDigest, deserializer, serializer)()(zCache)
+//  }
 
   def search(pathFilter: Option[PathFilter] = None,
              fieldFilters: Option[FieldFilter] = None,

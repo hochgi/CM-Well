@@ -110,7 +110,8 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
                             tbg: NbgToggler,
                             streams: Streams,
                             authUtils: AuthUtils,
-                            cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext) extends Controller with FileInfotonCaching with LazyLogging {
+                            cmwellRDFHelper: CMWellRDFHelper,
+                            formatterManager: FormatterManager)(implicit ec: ExecutionContext) extends Controller with FileInfotonCaching with LazyLogging {
 
   import ApplicationUtils._
 
@@ -181,7 +182,7 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
 //              case _ if p.isCompleted => Future.successful(None)
               case v if v.isEmpty => cmwell.util.concurrent.SimpleScheduler.schedule[Option[(String, ByteString)]](3.seconds)(Some(subscription -> cmwell.ws.Streams.endln))
               case _ => {
-                val formatter = FormatterManager.getFormatter(
+                val formatter = formatterManager.getFormatter(
                   d.format,
                   req.host,
                   req.uri,
@@ -264,7 +265,7 @@ callback=< [URL] >
       }
       val infotonsFut = crudServiceFS.getInfotonsByPathOrUuid(uuids = uuids.toVector)
       //TODO: probably not the best host to provide a formatter. is there a way to get the original host the subscription was asked from?
-      val formatter = FormatterManager.getFormatter(format, s"http://${cmwell.util.os.Props.machineName}:9000")
+      val formatter = formatterManager.getFormatter(format, s"http://${cmwell.util.os.Props.machineName}:9000")
       val futureRes = infotonsFut.flatMap { bag =>
         import cmwell.util.http.SimpleResponse.Implicits.UTF8StringHandler
         SimpleHttpClient.post[String](url,formatter.render(bag),Some(formatter.mimetype))
@@ -380,7 +381,7 @@ callback=< [URL] >
       else {
         crudServiceFS.getInfotonByUuidAsync(uuid).flatMap {
           case FullBox(infoton) if isPurgeOp && allowed(infoton, PermissionLevel.Write) =>
-            val formatter = getFormatter(req, "json")
+            val formatter = getFormatter(req, formatterManager, "json")
 
             req.getQueryString("index") match {
               case Some(index) =>
@@ -418,7 +419,7 @@ callback=< [URL] >
     }
 
     val resultsFut = getDataFromActor(trackingId)
-    val formatter = getFormatter(request, defaultFormat = "ntriples", withoutMeta = true)
+    val formatter = getFormatter(request, formatterManager, defaultFormat = "ntriples", withoutMeta = true)
     def errMsg(msg: String) = s"""{"success":false,"error":"$msg"}"""
 
     resultsFut.map { results =>
@@ -515,7 +516,7 @@ callback=< [URL] >
 
           val formatter = request.getQueryString("format").getOrElse("json") match {
             case FormatExtractor(formatType) =>
-              FormatterManager.getFormatter(format = formatType,
+              formatterManager.getFormatter(format = formatType,
                 host = request.host,
                 uri = request.uri,
                 pretty = request.queryString.keySet("pretty"),
@@ -625,7 +626,7 @@ callback=< [URL] >
                   case RdfType(NTriplesFlavor) => true
                   case _ => false
                 })
-                val formatter = FormatterManager.getFormatter(format = formatType,
+                val formatter = formatterManager.getFormatter(format = formatType,
                   host = request.host,
                   uri = request.uri,
                   pretty = false,
@@ -711,7 +712,7 @@ callback=< [URL] >
                   case RdfType(NTriplesFlavor) => true
                   case _ => false
                 })
-                val formatter = FormatterManager.getFormatter(format = formatType,
+                val formatter = formatterManager.getFormatter(format = formatType,
                   host = request.host,
                   uri = request.uri,
                   pretty = false,
@@ -790,7 +791,7 @@ callback=< [URL] >
                   case RdfType(NTriplesFlavor) => true
                   case _ => false
                 })
-                val formatter = FormatterManager.getFormatter(format = formatType,
+                val formatter = formatterManager.getFormatter(format = formatType,
                   host = request.host,
                   uri = request.uri,
                   pretty = false,
@@ -904,7 +905,7 @@ callback=< [URL] >
         ).map {
           case SortedConsumeState(firstTimeStamp, path, history, deleted, descendants, fieldFilters) => {
 
-            val formatter = FormatterManager.getFormatter(
+            val formatter = formatterManager.getFormatter(
               format = formatType,
               host = request.host,
               uri = request.uri,
@@ -1063,7 +1064,7 @@ callback=< [URL] >
 
           val (contentType, formatter) = requestedFormat match {
             case FormatExtractor(formatType) =>
-              val f = FormatterManager.getFormatter(
+              val f = formatterManager.getFormatter(
                 format = formatType,
                 host = request.host,
                 uri = request.uri,
@@ -1290,7 +1291,7 @@ callback=< [URL] >
           case FormatExtractor(formatType) => itStateEitherFuture.flatMap {
             case Left(errMsg) => Future.successful(BadRequest(errMsg))
             case Right(IterationState(scrollId, withHistory)) => {
-              val formatter = FormatterManager.getFormatter(
+              val formatter = formatterManager.getFormatter(
                 format = formatType,
                 host = request.host,
                 uri = request.uri,
@@ -1384,7 +1385,7 @@ callback=< [URL] >
               crudServiceFS.aggregate(pathFilter, fieldFilters, Some(DatesFilter(from, to)), PaginationParams(offset, length), withHistory, af.flatten, debugInfo).map { aggResult =>
                 request.getQueryString("format").getOrElse("json") match {
                   case FormatExtractor(formatType) => {
-                    val formatter = FormatterManager.getFormatter(
+                    val formatter = formatterManager.getFormatter(
                       format = formatType,
                       host = request.host,
                       uri = request.uri,
@@ -1522,7 +1523,7 @@ callback=< [URL] >
                     //TODO: why not check for valid format before doing all the hard work for search?
                     getQueryString("format").getOrElse("atom") match {
                       case FormatExtractor(formatType) => {
-                        val formatter = FormatterManager.getFormatter(
+                        val formatter = formatterManager.getFormatter(
                           format = formatType,
                           host = requestHost,
                           uri = requestUri,
@@ -1573,7 +1574,7 @@ callback=< [URL] >
               case f if !Set("text", "path", "tsv", "tab", "nt", "ntriples", "nq", "nquads")(f.toLowerCase) && !f.toLowerCase.startsWith("json") =>
                 Future.successful(BadRequest(Json.obj("success" -> false, "message" -> "not a streamable type (use any json, or one of: 'text','tsv','ntriples', or 'nquads')")))
               case FormatExtractor(formatType) => {
-                val formatter = FormatterManager.getFormatter(format = formatType,
+                val formatter = formatterManager.getFormatter(format = formatType,
                   host = request.host,
                   uri = request.uri,
                   pretty = false,
@@ -1595,7 +1596,7 @@ callback=< [URL] >
           }
           else {
             val formatter = format.getOrElse("atom") match {
-              case FormatExtractor(formatType) => FormatterManager.getFormatter(
+              case FormatExtractor(formatType) => formatterManager.getFormatter(
                 format = formatType,
                 host = request.host,
                 uri = request.uri,
@@ -1612,7 +1613,7 @@ callback=< [URL] >
         else {
           lazy val formatter = format.getOrElse("json") match {
             case FormatExtractor(formatType) =>
-              FormatterManager.getFormatter(
+              formatterManager.getFormatter(
                 formatType,
                 request.host,
                 request.uri,
@@ -1677,7 +1678,7 @@ callback=< [URL] >
         val maskedInfoton = i.masked(fieldsMask)
 
         def infotonIslandResult(prefix: String, suffix: String) = {
-          val infotonStr = FormatterManager.getFormatter(JsonlType).render(maskedInfoton)
+          val infotonStr = formatterManager.getFormatter(JsonlType).render(maskedInfoton)
 
           //TODO: find out why did we use "plumbing" API. we should let play determine content length etc'...
           val r = Ok(prefix + Utility.escape(infotonStr) + suffix)
@@ -1692,7 +1693,7 @@ callback=< [URL] >
         //TODO: use formatter manager to get the suitable formatter
         request.getQueryString("format") match {
           case Some(FormatExtractor(formatType)) => {
-            val formatter = FormatterManager.getFormatter(
+            val formatter = formatterManager.getFormatter(
               format = formatType,
               host = request.host,
               uri = request.uri,
@@ -1853,7 +1854,7 @@ callback=< [URL] >
       Future.successful(Forbidden("not authorized to overwrite"))
     else if(isReactive(req)){
       val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
-      val formatter = getFormatter(req, "json")
+      val formatter = getFormatter(req, formatterManager, "json")
       val parallelism = req.getQueryString("parallelism").flatMap(asInt).getOrElse(1)
       crudServiceFS.rFix(normalizePath(req.path),parallelism,nbg).map { source =>
         val s = source.map { bs =>
@@ -1866,7 +1867,7 @@ callback=< [URL] >
     else {
       val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
       val f = crudServiceFS.fix(normalizePath(req.path),limit)
-      val formatter = getFormatter(req, "json")
+      val formatter = getFormatter(req, formatterManager, "json")
       val r = f.map {
         bs => Ok(formatter.render(SimpleResponse(bs._1, if (bs._2.isEmpty) None else Some(bs._2)))).as(overrideMimetype(formatter.mimetype, req)._2)
       }
@@ -1877,7 +1878,7 @@ callback=< [URL] >
   def handleVerify(req: Request[AnyContent]): Future[Result] = {
     val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
     val f = crudServiceFS.verify(normalizePath(req.path),limit)
-    val formatter = getFormatter(req, "json")
+    val formatter = getFormatter(req, formatterManager, "json")
     f.map {
       b => Ok(formatter.render(SimpleResponse(b, None))).as(overrideMimetype(formatter.mimetype, req)._2)
     }
@@ -1909,7 +1910,7 @@ callback=< [URL] >
       Future.successful(Forbidden("not authorized to overwrite"))
     else {
       val f = crudServiceFS.fixDc(normalizePath(req.path), Settings.dataCenter)
-      val formatter = getFormatter(req, "json")
+      val formatter = getFormatter(req, formatterManager, "json")
       f.map {
         bs => Ok(formatter.render(SimpleResponse(bs, None))).as(overrideMimetype(formatter.mimetype, req)._2)
       }.recoverWith(asyncErrorHandler)
@@ -1934,7 +1935,7 @@ callback=< [URL] >
       if (!allowed) {
         p.completeWith(Future.successful(Forbidden("Not authorized")))
       } else {
-        val formatter = getFormatter(req, "json")
+        val formatter = getFormatter(req, formatterManager, "json")
         val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
         val res = if (onlyLast)
           notImplemented // CRUDServiceFS.rollback(path,limit)
@@ -1958,7 +1959,7 @@ callback=< [URL] >
     if(!allowed) {
       Future.successful(Forbidden("Not authorized"))
     } else {
-      val formatter = getFormatter(req,"json")
+      val formatter = getFormatter(req, formatterManager,"json")
       val limit = req.getQueryString("versions-limit").flatMap(asInt).getOrElse(Settings.defaultLimitForHistoryVersions)
       crudServiceFS.purgePath2(path,limit).map{
         b => Ok(formatter.render(SimpleResponse(true,None))).as(overrideMimetype(formatter.mimetype,req)._2)

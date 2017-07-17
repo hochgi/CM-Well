@@ -625,6 +625,9 @@ package util {
     def extractRawKeyAsFieldName(rff: RawFieldFilter): Try[FieldFilter] = rff match {
       case RawMultiFieldFilter(fo, rffs) => Try.traverse(rffs)(extractRawKeyAsFieldName).map(MultiFieldFilter(fo, _))
       case RawSingleFieldFilter(fo, vo, Right(dfk), v) => USuccess(SingleFieldFilter(fo, vo, dfk.internalKey, v))
+      case UnevaluatedQuadFilter(_,_,alias) => UFailure {
+         new IllegalArgumentException(s"supplied fields must be direct. system.quad with alias[$alias] is not direct and needs to be resolved (use fully qualified URI instead).")
+      }
       case RawSingleFieldFilter(fo, vo, Left(rfk), v) => UFailure {
         new IllegalArgumentException(s"supplied fields must be direct. ${rfk.externalKey} needs to be resolved.")
       }
