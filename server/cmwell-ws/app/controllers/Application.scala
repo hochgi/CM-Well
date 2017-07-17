@@ -31,7 +31,7 @@ import cmwell.domain.{BagOfInfotons, CompoundInfoton, DeletedInfoton, FString, P
 import cmwell.formats._
 import cmwell.fts._
 import cmwell.rts.{Key, Pull, Push, Subscriber}
-import cmwell.util.concurrent.{Combiner, SimpleScheduler, SingleElementLazyAsyncCache}
+import cmwell.util.concurrent.{Combiner, SingleElementLazyAsyncCache}
 import cmwell.util.formats.Encoders
 import cmwell.util.http.SimpleHttpClient
 import cmwell.util.loading.ScalaJsRuntimeCompiler
@@ -45,7 +45,7 @@ import cmwell.ws.util._
 import cmwell.ws.{Settings, Streams}
 import com.typesafe.scalalogging.LazyLogging
 import k.grid.{ClientActor, Grid, GridJvm, RestartJvm}
-import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache, PassiveFieldTypesCache}
+import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 import ld.exceptions.BadFieldTypeException
 import logic.{CRUDServiceFS, InfotonValidator}
 import markdown.MarkdownFormatter
@@ -62,7 +62,6 @@ import cmwell.syntaxutils.!!!
 import cmwell.web.ld.cmw.CMWellRDFHelper
 
 import scala.collection.mutable.{HashMap, MultiMap}
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent._
 import scala.concurrent.duration._
 import scala.language.postfixOps
@@ -76,7 +75,7 @@ object ApplicationUtils {
     * @param path
     * @return
     */
-  def infotonPathDeletionAllowed(path: String, recursive: Boolean, crudServiceFS: CRUDServiceFS, nbg: Boolean): Future[Either[String, Seq[String]]] = {
+  def infotonPathDeletionAllowed(path: String, recursive: Boolean, crudServiceFS: CRUDServiceFS, nbg: Boolean)(implicit ec: ExecutionContext): Future[Either[String, Seq[String]]] = {
     def numOfChildren(p: String): Future[SearchResults] = {
       val pathFilter = if (p.length > 1) Some(PathFilter(p, true)) else None
       crudServiceFS.search(pathFilter, None, Some(DatesFilter(None, None)), PaginationParams(0, 500), false, false, SortParam.empty, false, false, nbg)
@@ -111,7 +110,7 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
                             tbg: NbgToggler,
                             streams: Streams,
                             authUtils: AuthUtils,
-                            cmwellRDFHelper: CMWellRDFHelper) extends Controller with FileInfotonCaching with LazyLogging {
+                            cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext) extends Controller with FileInfotonCaching with LazyLogging {
 
   import ApplicationUtils._
 
@@ -681,8 +680,8 @@ callback=< [URL] >
         val withMeta = request.queryString.keySet("with-meta")
         val length = request.getQueryString("length").flatMap(asLong)
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
-        val fieldsMaskFut = extractFieldsMask(request,typesCache(nbg),cmwellRDFHelper)
         val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
+        val fieldsMaskFut = extractFieldsMask(request,typesCache(nbg),cmwellRDFHelper)
         val (withData, format) = {
           val wd = request.getQueryString("with-data")
           val frmt = request.getQueryString("format").getOrElse({
@@ -760,8 +759,8 @@ callback=< [URL] >
         val withMeta = request.queryString.keySet("with-meta")
         val length = request.getQueryString("length").flatMap(asLong)
         val pathFilter = Some(PathFilter(normalizedPath, withDescendants))
-        val fieldsMaskFut = extractFieldsMask(request,typesCache(nbg),cmwellRDFHelper)
         val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
+        val fieldsMaskFut = extractFieldsMask(request,typesCache(nbg),cmwellRDFHelper)
         val (withData, format) = {
           val wd = request.getQueryString("with-data")
           val frmt = request.getQueryString("format").getOrElse({

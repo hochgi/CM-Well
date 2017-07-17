@@ -48,7 +48,7 @@ sealed trait FieldKey {
 }
 sealed trait DirectFieldKey extends FieldKey {
   def infoPath: String
-  override def metaPath: Future[String] = Future.successful(infoPath)
+  override def metaPath: String = infoPath
 }
 
 case class UnresolvedURIFieldKey(uri: String) extends UnresolvedFieldKey {

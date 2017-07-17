@@ -107,8 +107,8 @@ object ConsumeState {
 
       private[this] def extractRawKeyAsFieldName(rff: RawFieldFilter): Try[FieldFilter] = rff match {
         case RawMultiFieldFilter(fo, rffs) => Try.traverse(rffs)(extractRawKeyAsFieldName).map(MultiFieldFilter(fo, _))
-        case RawSingleFieldFilter(fo, vo, dfk: DirectFieldKey, v) => S(SingleFieldFilter(fo, vo, dfk.internal, v))
-        case RawSingleFieldFilter(fo, vo, rfk: ResolvedFieldKey, v) => F {
+        case RawSingleFieldFilter(fo, vo, Right(dfk), v) => S(SingleFieldFilter(fo, vo, dfk.internalKey, v))
+        case RawSingleFieldFilter(fo, vo, Left(rfk), v) => F {
           new IllegalArgumentException(s"supplied fields must be direct. ${rfk.externalKey} needs to be resolved.")
         }
       }
