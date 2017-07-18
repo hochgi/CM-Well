@@ -554,57 +554,29 @@ package object wsutil extends LazyLogging {
                   population: Seq[Infoton],
                   cache: Map[String, Infoton]): Future[(Seq[Infoton],Seq[Infoton])] = {
 
-
-
        def mkFieldFilters2(ff: FilteredField[FieldKeyPattern], outerFieldOperator: FieldOperator, urls: List[String]): Future[FieldFilter] = {
 
-         def shoulds(url: String, fieldsSet: Set[String], rffo: Option[RawFieldFilter]): List[FieldFilter] = fieldsSet.map { internalKey =>
-           SingleFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), Equals, internalKey, Some(url))
-         }(breakOut)
-
-         val FilteredField(FieldKeyPattern(fk), rffo) = ff
-         val internalFieldNames = FieldKey.eval(fk, typesCache, cmwellRDFHelper)
-         val filterFut: Future[FieldFilter] = urls match {
-           case Nil => throw new IllegalStateException(s"empty urls in expandUp($filteredFields,population[size=${population.size}],cache[size=${cache.size}])\nfor pattern: $ygPattern\nand infotons.take(3) = ${infotons.take(3).mkString("[", ",", "]")}")
-           case url :: Nil => internalFieldNames.map { fieldsSet =>
-             MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), shoulds(url,fieldsSet,rffo))
-           }
-           case _ => internalFieldNames.map { fieldsSet =>
-             val allFilters = urls.foldLeft(List.empty[FieldFilter]) {
-               case (accumolatedFieldFilters, url) => shoulds(url, fieldsSet, rffo).foldLeft(accumolatedFieldFilters)(_.::(_))
+         val FilteredField(fkp, rffo) = ff
+         val internalFieldNameFut = fkp match {
+           case FieldKeyPattern(Right(dfk)) => Future.successful(dfk.internalKey)
+           case FieldKeyPattern(Left(unfk)) => FieldKey.resolve(unfk, cmwellRDFHelper).map(_.internalKey)
+         }
+         val filterFut: Future[FieldFilter] = internalFieldNameFut.map { internalFieldName =>
+           urls match {
+             case Nil => throw new IllegalStateException(s"empty urls in expandUp($filteredFields,population[size=${population.size}],cache[size=${cache.size}])\nfor pattern: $ygPattern\nand infotons.take(3) = ${infotons.take(3).mkString("[", ",", "]")}")
+             case url :: Nil => SingleFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), Equals, internalFieldName, Some(url))
+             case _ => {
+               val shoulds = urls.map(url => SingleFieldFilter(Should, Equals, internalFieldName, Some(url)))
+               MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), shoulds)
              }
-             MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), allFilters)
            }
          }
-
          rffo.fold[Future[FieldFilter]](filterFut) { rawFilter =>
            RawFieldFilter.eval(rawFilter, typesCache, cmwellRDFHelper).flatMap { filter =>
              filterFut.map(ff => MultiFieldFilter(outerFieldOperator, List(ff, filter)))
            }
          }
        }
-
-//       def mkFieldFilters2(ff: FilteredField[FieldKeyPattern], outerFieldOperator: FieldOperator, urls: List[String]): Future[FieldFilter] = {
-//         val FilteredField(FieldKeyPattern(fk), rffo) = ff
-//         val fFilter: FieldFilter = fk match {
-//           case Right(dfk) => urlsToFieldFilter(urls, rffo, outerFieldOperator, dfk)
-//           case unresolved => FieldKey.eval(unresolved,typesCache,cmwellRDFHelper)
-//         }
-//         rffo.fold[Future[FieldFilter]](Future.successful(fFilter)) { rawFilter =>
-//           RawFieldFilter.eval(rawFilter, typesCache, cmwellRDFHelper).map { ff =>
-//             MultiFieldFilter(outerFieldOperator, List(fFilter, ff))
-//           }
-//         }
-//       }
-//
-//       def urlsToFieldFilter(urls: List[String], rffo: Option[RawFieldFilter], outerFieldOperator: FieldOperator, fk: FieldKey): FieldFilter = urls match {
-//         case Nil => throw new IllegalStateException(s"empty urls in expandUp($filteredFields,population[size=${population.size}],cache[size=${cache.size}])\nfor pattern: $ygPattern\nand infotons.take(3) = ${infotons.take(3).mkString("[", ",", "]")}")
-//         case url :: Nil => SingleFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), Equals, fk.internalKey, Some(url))
-//         case _ => {
-//           val shoulds = urls.map(url => SingleFieldFilter(Should, Equals, fk.internalKey, Some(url)))
-//           MultiFieldFilter(rffo.fold[FieldOperator](outerFieldOperator)(_ => Must), shoulds)
-//         }
-//       }
 
        Future.traverse(population.grouped(chunkSize)) { infotonsChunk =>
          val urls: List[String] = infotonsChunk.map(i => pathToUri(i.path))(breakOut)
