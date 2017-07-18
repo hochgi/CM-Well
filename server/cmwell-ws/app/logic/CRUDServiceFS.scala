@@ -19,7 +19,7 @@ package logic
 import java.util.Properties
 
 import akka.NotUsed
-import akka.actor.Actor
+import akka.actor.{Actor, ActorSystem}
 import akka.actor.Actor.Receive
 import akka.stream.scaladsl.Source
 import cmwell.domain._
@@ -52,14 +52,14 @@ import controllers.NbgToggler
 import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 
 @Singleton
-class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) extends LazyLogging {
+class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext, sys: ActorSystem) extends LazyLogging {
 
   import cmwell.ws.Settings._
 
   def newBG = tbg.get
 
-  lazy val nbgPassiveFieldTypesCache = new NbgPassiveFieldTypesCache(this)
-  lazy val obgPassiveFieldTypesCache = new ObgPassiveFieldTypesCache(this)
+  lazy val nbgPassiveFieldTypesCache = new NbgPassiveFieldTypesCache(this,ec,sys)
+  lazy val obgPassiveFieldTypesCache = new ObgPassiveFieldTypesCache(this,ec,sys)
   val level: ConsistencyLevel = ONE
   // create state object in read only
   val impState = TLogState("imp", updatesTLogName, updatesTLogPartition, true)
@@ -78,14 +78,14 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
   lazy val _irwService = IRWService(Dao(irwServiceDaoClusterName, irwServiceDaoKeySpace, irwServiceDaoHostName), disableReadCache = !Settings.irwReadCacheEnabled)
   lazy val _irwService2 = IRWService.newIRW(Dao(irwServiceDaoClusterName, irwServiceDaoKeySpace2, irwServiceDaoHostName), disableReadCache = !Settings.irwReadCacheEnabled)
   def irwService(nbg: Boolean = newBG): IRWService = {
-    if(nbg) _irwService2
+    if(nbg || newBG) _irwService2
     else _irwService
   }
 
   lazy val ftsServiceOld = FTSServiceES.getOne("ws.es.yml", false)
   lazy val ftsServiceNew = FTSServiceNew("ws.es.yml")
   def ftsService(nbg: Boolean = newBG): FTSServiceOps = {
-    if(nbg) ftsServiceNew
+    if(nbg || newBG) ftsServiceNew
     else ftsServiceOld
   }
 
@@ -101,14 +101,14 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
   val proxyOpsOld: Operations = ProxyOperations(_irwService, ftsServiceOld)
   val proxyOpsNew: Operations = ProxyOperations(_irwService2, ftsServiceNew)
   def proxyOps(nbg: Boolean = newBG): Operations  = {
-    if(nbg) proxyOpsNew
+    if(nbg || newBG) proxyOpsNew
     else proxyOpsOld
   }
 
   val ESMappingsCacheOld = new SingleElementLazyAsyncCache[Set[String]](Settings.fieldsNamesCacheTimeout.toMillis,Set.empty)(ftsServiceOld.getMappings(withHistory = true))
   val ESMappingsCacheNew = new SingleElementLazyAsyncCache[Set[String]](Settings.fieldsNamesCacheTimeout.toMillis,Set.empty)(ftsServiceNew.getMappings(withHistory = true))
   def ESMappingsCache(nbg: Boolean = newBG): SingleElementLazyAsyncCache[Set[String]] = {
-    if(nbg) ESMappingsCacheNew
+    if(nbg || newBG) ESMappingsCacheNew
     else ESMappingsCacheOld
   }
 
@@ -117,7 +117,7 @@ class CRUDServiceFS @Inject()(tbg: NbgToggler)(implicit ec: ExecutionContext) ex
   val MetaNsCacheNew =
     new SingleElementLazyAsyncCache[Set[String]](Settings.fieldsNamesCacheTimeout.toMillis,Set.empty)(fetchEntireMetaNsAsPredicates(true))
 
-  def metaNsCache(nbg: Boolean = newBG) = if(nbg) MetaNsCacheNew else MetaNsCacheOld
+  def metaNsCache(nbg: Boolean = newBG) = if(nbg || newBG) MetaNsCacheNew else MetaNsCacheOld
 
   private val fieldsSetBreakout = scala.collection.breakOut[Seq[Option[String]],String,Set[String]]
 

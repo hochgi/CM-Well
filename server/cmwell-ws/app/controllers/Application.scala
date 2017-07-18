@@ -113,8 +113,8 @@ class Application @Inject()(bulkScrollHandler: BulkScrollHandler,
 
   import ApplicationUtils._
 
-  val nCache: NbgPassiveFieldTypesCache = crudServiceFS.nbgPassiveFieldTypesCache
-  val oCache: ObgPassiveFieldTypesCache = crudServiceFS.obgPassiveFieldTypesCache
+  lazy val nCache: NbgPassiveFieldTypesCache = crudServiceFS.nbgPassiveFieldTypesCache
+  lazy val oCache: ObgPassiveFieldTypesCache = crudServiceFS.obgPassiveFieldTypesCache
   val fullDateFormatter = ISODateTimeFormat.dateTime().withZone(DateTimeZone.UTC)
 
   def typesCache(nbg: Boolean) = if(nbg || tbg.get) nCache else oCache
@@ -1448,7 +1448,7 @@ callback=< [URL] >
         else if (!withData && (xg || (yg && getQueryString("yg").get.split('|').exists(_.trim.startsWith(">")))))
           Future.successful(BadRequest(s"you can't mix `xg` nor '>' prefixed `yg` expressions without also specifying `with-data`: it makes no sense!"))
         else {
-          val fieldSortParamsFut = RawSortParam.eval(rawSortParams,crudServiceFS,typesCache(nbg),cmwellRDFHelper)
+          val fieldSortParamsFut = RawSortParam.eval(rawSortParams,crudServiceFS,typesCache(nbg),cmwellRDFHelper,nbg)
           val fieldsFiltersFut = qpOpt.fold[Future[Option[FieldFilter]]](Future.successful(Option.empty[FieldFilter]))(rff => RawFieldFilter.eval(rff,typesCache(nbg),cmwellRDFHelper).map(Some.apply))
           fieldsFiltersFut.flatMap { fieldFilters =>
             fieldSortParamsFut.flatMap { fieldSortParams =>

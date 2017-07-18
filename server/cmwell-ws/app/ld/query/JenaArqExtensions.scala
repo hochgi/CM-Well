@@ -255,8 +255,17 @@ class CmWellGraph(val dsg: DatasetGraphCmWell) extends GraphBase with LazyLoggin
   }
 }
 
-case class Config(doNotOptimize: Boolean, intermediateLimit: Long, resultsLimit: Long, verbose: Boolean, deadline: Deadline, explainOnly: Boolean)
-object Config { val defaultConfig = Config(doNotOptimize = false, 10000, 10000, verbose = false, deadline = SpHandler.queryTimeout.fromNow, explainOnly = false) }
+case class Config(doNotOptimize: Boolean, intermediateLimit: Long, resultsLimit: Long, verbose: Boolean, finiteDuarationForDeadLine: FiniteDuration, deadline: Option[Deadline], explainOnly: Boolean)
+object Config {
+  lazy val defaultConfig = new Config(
+    doNotOptimize = false,
+    intermediateLimit = 10000,
+    resultsLimit = 10000,
+    verbose = false,
+    finiteDuarationForDeadLine = SpHandler.queryTimeout,
+    deadline = None,
+    explainOnly = false)
+}
 
 class DatasetGraphCmWell(val host: String,
                          val config: Config,
@@ -301,7 +310,7 @@ class DatasetGraphCmWell(val host: String,
     findInDftGraph(node, node1, node2) // todo quads
 
   override def findInDftGraph(s: Node, p: Node, o: Node): util.Iterator[Quad] = {
-    if(config.deadline.isOverdue) {
+    if(config.deadline.exists(_.isOverdue)) {
       logMsgOnce("Warning", "Query was timed out")
       Iterator[Quad]()
     } else {

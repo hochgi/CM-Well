@@ -35,7 +35,7 @@ object JenaArqExtensionsUtils {
                                 arqCache: ArqCache,
                                 jenaArqExtensionsUtils: JenaArqExtensionsUtils,
                                 dataFetcher: DataFetcher)(implicit ec: ExecutionContext) = {
-    val driver = new DatasetGraphCmWell(host, config, nbg, crudServiceFS, arqCache, jenaArqExtensionsUtils, dataFetcher)
+    val driver = new DatasetGraphCmWell(host, config.copy(deadline = Some(config.finiteDuarationForDeadLine.fromNow)), nbg, crudServiceFS, arqCache, jenaArqExtensionsUtils, dataFetcher)
     val model = ModelFactory.createModelForGraph(driver.getDefaultGraph)
     val qe = QueryExecutionFactory.create(query, model) // todo quads
 
@@ -109,8 +109,6 @@ object JenaArqExtensionsUtils {
 }
 
 class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper, dataFetcher: DataFetcher) {
-
-  require(nbg == typesCache.nbg, "nbg mismatch")
 
   def predicateToInnerRepr(predicate: Node): Node = {
     if(!predicate.isURI) predicate else {

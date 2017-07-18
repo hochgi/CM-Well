@@ -63,7 +63,7 @@ object WorkerMain extends App with LazyLogging {
 
   val injector = Guice.createInjector(new CWModule())
   val nbgToggler = injector.getInstance(classOf[NbgToggler])
-  val crudServiceFS = new CRUDServiceFS(nbgToggler)
+  val crudServiceFS = new CRUDServiceFS(nbgToggler)(implicitly,Grid.system)
   val cmwellRDFHelper = new CMWellRDFHelper(crudServiceFS)
   val nArqCache = new ArqCache(crudServiceFS,true)
   val oArqCache = new ArqCache(crudServiceFS,false)
@@ -178,7 +178,7 @@ class QueryEvaluatorActor(nbg: Boolean,
       Try(QueryFactory.create(query)) match {
         case Failure(e) => sender() ! RemoteFailure(e)
         case Success(sprqlQuery) => {
-          val config = Config(rp.doNotOptimize, rp.intermediateLimit, rp.resultsLimit, rp.verbose, SpHandler.queryTimeout.fromNow, rp.explainOnly)
+          val config = Config(rp.doNotOptimize, rp.intermediateLimit, rp.resultsLimit, rp.verbose, SpHandler.queryTimeout, Some(SpHandler.queryTimeout.fromNow), rp.explainOnly)
           val JenaArqExtensionsUtils.BakedSparqlQuery(queryExecution,driver) =
             JenaArqExtensionsUtils.buildCmWellQueryExecution(sprqlQuery, host, config, nbg, crudServiceFS, arqCache, jenaArqExtensionsUtils, dataFetcher)
 

@@ -16,8 +16,8 @@ class AggregateBothOldAndNewTypesCaches(crudService: CRUDServiceFS,
   def crudServiceFS: CRUDServiceFS = crudService
   def nbg: Boolean = tbg.get
 
-  val oCache = crudService.obgPassiveFieldTypesCache
-  val nCache = crudService.nbgPassiveFieldTypesCache
+  lazy val oCache = crudService.obgPassiveFieldTypesCache
+  lazy val nCache = crudService.nbgPassiveFieldTypesCache
 
   override def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = {
     val fo = oCache.get(fieldKey, forceUpdateForType)

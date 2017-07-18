@@ -134,11 +134,11 @@ object RawSortParam extends LazyLogging {
 //  private[this] val indexedFieldsNamesCache =
 //    new SingleElementLazyAsyncCache[Set[String]](Settings.fieldsNamesCacheTimeout.toMillis,Set.empty)(CRUDServiceFS.ftsService.getMappings(withHistory = true))(scala.concurrent.ExecutionContext.Implicits.global)
 
-  def eval(rsps: RawSortParam, crudServiceFS: CRUDServiceFS, cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[SortParam] = rsps match {
+  def eval(rsps: RawSortParam, crudServiceFS: CRUDServiceFS, cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper, nbg: Boolean)(implicit ec: ExecutionContext): Future[SortParam] = rsps match {
     case RawNullSortParam => Future.successful(NullSortParam)
     case RawFieldSortParam(rfsp) => {
 
-      val indexedFieldsNamesFut = crudServiceFS.ESMappingsCache(cache.nbg).getAndUpdateIfNeeded
+      val indexedFieldsNamesFut = crudServiceFS.ESMappingsCache(nbg).getAndUpdateIfNeeded
 
       Future.traverse(rfsp) {
         case (fk, ord) => FieldKey.eval(fk,cache,cmwellRDFHelper).map(_.map(_ -> ord)(bo))

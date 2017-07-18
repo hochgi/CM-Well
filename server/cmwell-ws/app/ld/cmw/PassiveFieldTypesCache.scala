@@ -16,45 +16,148 @@
 
 package ld.cmw
 
-import javax.inject._
-
-import akka.actor.{Actor, ActorRef, Cancellable}
+import akka.actor.{Actor, ActorPath, ActorRef, ActorSystem, Cancellable, Props}
 import akka.pattern._
 import cmwell.domain.{FString, Infoton}
-import cmwell.util.concurrent._
 import com.google.common.cache.{Cache, CacheBuilder}
 import com.typesafe.scalalogging.LazyLogging
-import k.grid.Grid
 import logic.CRUDServiceFS
 import wsutil.{FieldKey, NnFieldKey}
 
 import scala.collection.generic.CanBuildFrom
 import scala.collection.mutable.{Set => MSet}
-import scala.collection.parallel.mutable
 import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
+// TODO: indexTime based search for changes since last change?
+object PassiveFieldTypesCache {
+  private[cmw] lazy val uniqueIdentifierForActorName = {
+    val n = cmwell.util.os.Props.machineName
+    if(ActorPath.isValidPathElement(n)) n
+    else cmwell.util.string.Hash.crc32(n)
+  }
+
+  private[cmw] case object UpdateCache
+  private[cmw] case object UpdateCompleted
+  private[cmw] case class RequestUpdateFor(field: FieldKey)
+  private[cmw] case class UpdateAndGet(field: FieldKey)
+  private[cmw] case class Put(field: String, types: Set[Char], reportWhenDone: Boolean = false, reportTo: Option[ActorRef] = None)
+
+  private[cmw] class PassiveFieldTypesCacheActor(crudService: CRUDServiceFS, nbg: Boolean, cache: Cache[String,Either[Future[Set[Char]],(Long, Set[Char])]], updatingExecutionContext: ExecutionContext) extends Actor with LazyLogging {
+
+    var requestedCacheUpdates: MSet[FieldKey] = _
+    var cancellable: Cancellable = _
+
+    override def preStart() = {
+      requestedCacheUpdates = MSet.empty[FieldKey]
+      cancellable = context.system.scheduler.schedule(1.second, 2.minutes, self, UpdateCache)(updatingExecutionContext, self)
+    }
+
+    override def receive: Receive = {
+      case RequestUpdateFor(field) => requestedCacheUpdates += field
+      case UpdateCache => if (requestedCacheUpdates.nonEmpty) {
+        requestedCacheUpdates.foreach { fk =>
+          val maybe = cache.getIfPresent(fk.internalKey)
+          if (maybe eq null) {
+            val lefuture = Left(getMetaFieldInfoton(fk).map(infoptToChars)(updatingExecutionContext))
+            cache.put(fk.internalKey, lefuture)
+          }
+          else maybe.right.foreach {
+            case (oTime, chars) => {
+              getMetaFieldInfoton(fk).foreach { infopt =>
+                val types = infoptToChars(infopt)
+                if (types.diff(chars).nonEmpty) {
+                  self ! Put(fk.internalKey, types union chars)
+                }
+              }(updatingExecutionContext)
+            }
+          }
+        }
+        requestedCacheUpdates.clear() // = MSet.empty[FieldKey]
+      }
+      case Put(internalKey,types,reportWhenDone,reportTo) => {
+        lazy val sendr = reportTo.getOrElse(sender())
+        val maybe = cache.getIfPresent(internalKey)
+        if(maybe eq null) {
+          cache.put(internalKey,Right(System.currentTimeMillis() -> types))
+          if(reportWhenDone) {
+            sendr ! UpdateCompleted
+          }
+        }
+        else maybe match {
+          case Left(future) => future.onComplete {
+            case Failure(error) => self ! Put(internalKey,types,reportWhenDone,Some(sendr))
+            case Success(chars) => {
+              if ((types diff chars).nonEmpty) self ! Put(internalKey, types union chars, reportWhenDone, Some(sendr))
+              else if (reportWhenDone) sendr ! UpdateCompleted
+            }
+          }(updatingExecutionContext)
+          case Right((_,chars)) => {
+            if (types.diff(chars).nonEmpty) {
+              cache.put(internalKey, Right(System.currentTimeMillis() -> (chars union types)))
+            }
+            if(reportWhenDone) {
+              sendr ! UpdateCompleted
+            }
+          }
+        }
+      }
+      case UpdateAndGet(field: FieldKey) => {
+        val sndr = sender()
+        val rv = getMetaFieldInfoton(field).map(infoptToChars)(updatingExecutionContext)
+        rv.onComplete {      //field.metaPath is already completed as it is memoized in a lazy val if it is truly async
+          case Failure(e) => logger.error(s"failed to update cache for: ${field.metaPath}", e)
+          case Success(types) => {
+            val nTime = System.currentTimeMillis()
+            lazy val right = Right(nTime->types)
+            sndr ! types
+            // cache's concurrencyLevel set to 1, so we should avoid useless updates,
+            // nevertheless, it's okay to risk blocking on the cache's write lock here,
+            // because writes are rare (once every 2 minutes, and on first-time asked fields)
+            val internalKey = field.internalKey
+            val maybe = cache.getIfPresent(internalKey)
+            if (maybe eq null) cache.put(internalKey,right)
+            else maybe match {
+              case Right((oTime,chars)) if types.diff(chars).isEmpty => if(nTime > oTime) cache.put(internalKey,right)
+              case Right((oTime,chars)) => cache.put(internalKey,Right(System.currentTimeMillis → chars.union(types)))
+              case Left(charsFuture) => charsFuture.onComplete {
+                case Failure(error) => {
+                  logger.error("future stored in types cache failed",error)
+                  self ! Put(internalKey,types)
+                }
+                case Success(chars) => if (types diff chars nonEmpty) {
+                  self ! Put(internalKey, types union chars)
+                }
+              }(updatingExecutionContext)
+            }
+          }
+        }(updatingExecutionContext)
+      }
+    }
+
+    private def infoptToChars(infopt: Option[Infoton]) = {
+      val typesOpt = infopt.flatMap(_.fields.flatMap(_.get("mang")))
+      typesOpt.fold(Set.empty[Char])(_.collect{
+        case FString(t, _, _) if t.length == 1 => t.head
+      })
+    }
+
+    private def getMetaFieldInfoton(field: FieldKey): Future[Option[Infoton]] =
+      crudService.getInfoton(field.metaPath, None, None, nbg).map(_.map(_.infoton))(updatingExecutionContext)
+  }
+}
 
 abstract class PassiveFieldTypesCache { this: LazyLogging =>
 
-  def crudServiceFS: CRUDServiceFS
-  def nbg: Boolean
-
-  // TODO: indexTime based search for changes since last change
-  // TODO: instead of checking a `FieldKey` for `NnFieldKey(k) if k.startsWith("system.")` maybe it is better to add `SysFieldKey` ???
-
-  case object UpdateCache
-  case object UpdateCompleted
-  case class RequestUpdateFor(field: FieldKey)
-  case class UpdateAndGet(field: FieldKey)
-  case class Put(field: String, types: Set[Char], reportWhenDone: Boolean = false, reportTo: Option[ActorRef] = None)
+  import PassiveFieldTypesCache._
 
   implicit val timeout = akka.util.Timeout(10.seconds)
   private val cbf = implicitly[CanBuildFrom[MSet[FieldKey],(String,FieldKey),MSet[(String,FieldKey)]]]
-//  private val cbf = scala.collection.breakOut[MSet[FieldKey],(String,FieldKey),Map[String,FieldKey]]
+  //  private val cbf = scala.collection.breakOut[MSet[FieldKey],(String,FieldKey),Map[String,FieldKey]]
 
   def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = fieldKey match {
+    // TODO: instead of checking a `FieldKey` for `NnFieldKey(k) if k.startsWith("system.")` maybe it is better to add `SysFieldKey` ???
     case NnFieldKey(k) if k.startsWith("system.") || k.startsWith("content.") || k.startsWith("link.") => Future.successful(Set.empty)
     case field => Try {
       val key = field.internalKey
@@ -114,126 +217,26 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
     sb.append("]").result()
   }
 
-  protected def createActor: ActorRef
+  protected def createActor: ActorRef = null.asInstanceOf[ActorRef]
 
-  //TODO: think of using a different more suitable `ExecutionContext` instead of `global`
   private[this] val actor: ActorRef = createActor
-  private[this] val cache: Cache[String,Either[Future[Set[Char]],(Long, Set[Char])]] = CacheBuilder.newBuilder().concurrencyLevel(1).build()
-
-  class PassiveFieldTypesCacheActor(updatingExecutionContext: ExecutionContext) extends Actor {
-
-    var requestedCacheUpdates: MSet[FieldKey] = _
-    var cancellable: Cancellable = _
-
-    override def preStart() = {
-      requestedCacheUpdates = MSet.empty[FieldKey]
-      cancellable = context.system.scheduler.schedule(1.second, 2.minutes, self, UpdateCache)(updatingExecutionContext, self)
-    }
-
-    override def receive: Receive = {
-      case RequestUpdateFor(field) => requestedCacheUpdates += field
-      case UpdateCache => if (requestedCacheUpdates.nonEmpty) {
-        requestedCacheUpdates.foreach { fk =>
-          val maybe = cache.getIfPresent(fk.internalKey)
-          if (maybe eq null) {
-            val lefuture = Left(getMetaFieldInfoton(fk).map(infoptToChars)(updatingExecutionContext))
-            cache.put(fk.internalKey, lefuture)
-          }
-          else maybe.right.foreach {
-            case (oTime, chars) => {
-              getMetaFieldInfoton(fk).foreach { infopt =>
-                val types = infoptToChars(infopt)
-                if (types.diff(chars).nonEmpty) {
-                  self ! Put(fk.internalKey, types union chars)
-                }
-              }(updatingExecutionContext)
-            }
-          }
-        }
-        requestedCacheUpdates.clear() // = MSet.empty[FieldKey]
-      }
-      case Put(internalKey,types,reportWhenDone,reportTo) => {
-        lazy val sendr = reportTo.getOrElse(sender())
-        val maybe = cache.getIfPresent(internalKey)
-        if(maybe eq null) {
-          cache.put(internalKey,Right(System.currentTimeMillis() -> types))
-          if(reportWhenDone) {
-            sendr ! UpdateCompleted
-          }
-        }
-        else maybe match {
-          case Left(future) => future.onComplete {
-            case Failure(error) => self ! Put(internalKey,types,reportWhenDone,Some(sendr))
-            case Success(chars) => {
-              if ((types diff chars).nonEmpty) actor ! Put(internalKey, types union chars, reportWhenDone, Some(sendr))
-              else if (reportWhenDone) sendr ! UpdateCompleted
-            }
-          }(updatingExecutionContext)
-          case Right((_,chars)) => {
-            if (types.diff(chars).nonEmpty) {
-              cache.put(internalKey, Right(System.currentTimeMillis() -> (chars union types)))
-            }
-            if(reportWhenDone) {
-              sendr ! UpdateCompleted
-            }
-          }
-        }
-      }
-      case UpdateAndGet(field: FieldKey) => {
-        val sndr = sender()
-        val rv = getMetaFieldInfoton(field).map(infoptToChars)(updatingExecutionContext)
-        rv.onComplete {      //field.metaPath is already completed as it is memoized in a lazy val if it is truly async
-          case Failure(e) => logger.error(s"failed to update cache for: ${field.metaPath}", e)
-          case Success(types) => {
-            val nTime = System.currentTimeMillis()
-            lazy val right = Right(nTime->types)
-            sndr ! types
-            // cache's concurrencyLevel set to 1, so we should avoid useless updates,
-            // nevertheless, it's okay to risk blocking on the cache's write lock here,
-            // because writes are rare (once every 2 minutes, and on first-time asked fields)
-            val internalKey = field.internalKey
-            val maybe = cache.getIfPresent(internalKey)
-            if (maybe eq null) cache.put(internalKey,right)
-            else maybe match {
-              case Right((oTime,chars)) if types.diff(chars).isEmpty => if(nTime > oTime) cache.put(internalKey,right)
-              case Right((oTime,chars)) => cache.put(internalKey,Right(System.currentTimeMillis → chars.union(types)))
-              case Left(charsFuture) => charsFuture.onComplete {
-                case Failure(error) => {
-                  logger.error("future stored in types cache failed",error)
-                  self ! Put(internalKey,types)
-                }
-                case Success(chars) => if (types diff chars nonEmpty) {
-                  self ! Put(internalKey, types union chars)
-                }
-              }(updatingExecutionContext)
-            }
-          }
-        }(updatingExecutionContext)
-      }
-    }
-
-    private def infoptToChars(infopt: Option[Infoton]) = {
-      val typesOpt = infopt.flatMap(_.fields.flatMap(_.get("mang")))
-      typesOpt.fold(Set.empty[Char])(_.collect{
-        case FString(t, _, _) if t.length == 1 => t.head
-      })
-    }
-
-    private def getMetaFieldInfoton(field: FieldKey): Future[Option[Infoton]] =
-      crudServiceFS.getInfoton(field.metaPath, None, None, nbg).map(_.map(_.infoton))(updatingExecutionContext)
-  }
+  protected[this] lazy val cache: Cache[String,Either[Future[Set[Char]],(Long, Set[Char])]] = CacheBuilder.newBuilder().concurrencyLevel(1).build()
 }
 
-class NbgPassiveFieldTypesCache(crud: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging {
-  override val nbg = true
-  override val crudServiceFS = crud
+/** !!!!!!!!!!!!!!!
+  * !!! WARNING !!!
+  * !!!!!!!!!!!!!!!
+  *
+  * Following 2 implementation classes of cache define an actor using a const name (per machine).
+  * This means each of these classes may only be instantiated ONCE per [[ActorSystem]]!
+  */
+class NbgPassiveFieldTypesCache(crud: CRUDServiceFS, ec: ExecutionContext, sys: ActorSystem) extends PassiveFieldTypesCache with LazyLogging {
 
-  override def createActor: ActorRef = ??? //Grid.createAnon(classOf[PassiveFieldTypesCacheActor],scala.concurrent.ExecutionContext.Implicits.global)
+  val props = Props(classOf[PassiveFieldTypesCache.PassiveFieldTypesCacheActor], crud, true, cache, ec)
+  override def createActor: ActorRef = sys.actorOf(props,"NbgPassiveFieldTypesCache_" + PassiveFieldTypesCache.uniqueIdentifierForActorName)
 }
+class ObgPassiveFieldTypesCache(crud: CRUDServiceFS, ec: ExecutionContext, sys: ActorSystem) extends PassiveFieldTypesCache with LazyLogging {
 
-class ObgPassiveFieldTypesCache(crud: CRUDServiceFS) extends PassiveFieldTypesCache with LazyLogging {
-  override val nbg = false
-  override val crudServiceFS = crud
-
-  override def createActor: ActorRef =
+  val props = Props(classOf[PassiveFieldTypesCache.PassiveFieldTypesCacheActor], crud, false, cache, ec)
+  override def createActor: ActorRef = sys.actorOf(props,"ObgPassiveFieldTypesCache_" + PassiveFieldTypesCache.uniqueIdentifierForActorName)
 }

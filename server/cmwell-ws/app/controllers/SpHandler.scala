@@ -143,10 +143,10 @@ class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS, nbgToggler: Nb
 }
 
 object SpHandler extends LazyLogging {
-  val nActorSel = Grid.selectActor("NQueryEvaluatorActor", GridJvm(Jvms.CW))
-  val oActorSel = Grid.selectActor("OQueryEvaluatorActor", GridJvm(Jvms.CW))
-  implicit val timeout = akka.util.Timeout(100.seconds)
-  val queryTimeout = 90.seconds
+  lazy val nActorSel = Grid.selectActor("NQueryEvaluatorActor", GridJvm(Jvms.CW))
+  lazy val oActorSel = Grid.selectActor("OQueryEvaluatorActor", GridJvm(Jvms.CW))
+  implicit lazy val timeout = akka.util.Timeout(100.seconds)
+  lazy val queryTimeout = 90.seconds
 
   def task[T](nbg: Boolean)(paq: T) = {
     val actorSel = {
