@@ -74,7 +74,7 @@ object PassiveFieldTypesCache {
             }
           }
         }
-        requestedCacheUpdates.clear() // = MSet.empty[FieldKey]
+        requestedCacheUpdates.clear()
       }
       case Put(internalKey,types,reportWhenDone,reportTo) => {
         lazy val sendr = reportTo.getOrElse(sender())
@@ -112,8 +112,9 @@ object PassiveFieldTypesCache {
             val nTime = System.currentTimeMillis()
             lazy val right = Right(nTime->types)
             sndr ! types
-            // cache's concurrencyLevel set to 1, so we should avoid useless updates,
-            // nevertheless, it's okay to risk blocking on the cache's write lock here,
+            // provided cache should have passed a cache that has concurrencyLevel set to 1.
+            // So we should avoid useless updates, nevertheless,
+            // it's okay to risk blocking on the cache's write lock here,
             // because writes are rare (once every 2 minutes, and on first-time asked fields)
             val internalKey = field.internalKey
             val maybe = cache.getIfPresent(internalKey)
@@ -148,13 +149,17 @@ object PassiveFieldTypesCache {
   }
 }
 
-abstract class PassiveFieldTypesCache { this: LazyLogging =>
+trait PassiveFieldTypesCacheTrait {
+  def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]]
+  def update(fieldKey: FieldKey, types: Set[Char])(implicit ec: ExecutionContext): Future[Unit]
+}
+
+abstract class PassiveFieldTypesCache(val cache: Cache[String,Either[Future[Set[Char]],(Long, Set[Char])]]) extends PassiveFieldTypesCacheTrait { this: LazyLogging =>
 
   import PassiveFieldTypesCache._
 
   implicit val timeout = akka.util.Timeout(10.seconds)
   private val cbf = implicitly[CanBuildFrom[MSet[FieldKey],(String,FieldKey),MSet[(String,FieldKey)]]]
-  //  private val cbf = scala.collection.breakOut[MSet[FieldKey],(String,FieldKey),Map[String,FieldKey]]
 
   def get(fieldKey: FieldKey, forceUpdateForType: Option[Set[Char]] = None)(implicit ec: ExecutionContext): Future[Set[Char]] = fieldKey match {
     // TODO: instead of checking a `FieldKey` for `NnFieldKey(k) if k.startsWith("system.")` maybe it is better to add `SysFieldKey` ???
@@ -219,8 +224,7 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
 
   protected def createActor: ActorRef = null.asInstanceOf[ActorRef]
 
-  private[this] val actor: ActorRef = createActor
-  protected[this] lazy val cache: Cache[String,Either[Future[Set[Char]],(Long, Set[Char])]] = CacheBuilder.newBuilder().concurrencyLevel(1).build()
+  private[this] lazy val actor: ActorRef = createActor
 }
 
 /** !!!!!!!!!!!!!!!
@@ -230,13 +234,21 @@ abstract class PassiveFieldTypesCache { this: LazyLogging =>
   * Following 2 implementation classes of cache define an actor using a const name (per machine).
   * This means each of these classes may only be instantiated ONCE per [[ActorSystem]]!
   */
-class NbgPassiveFieldTypesCache(crud: CRUDServiceFS, ec: ExecutionContext, sys: ActorSystem) extends PassiveFieldTypesCache with LazyLogging {
+class NbgPassiveFieldTypesCache(crud: CRUDServiceFS, ec: ExecutionContext, sys: ActorSystem) extends
+  // cache's concurrencyLevel set to 1, so we should avoid useless updates,
+  // nevertheless, it's okay to risk blocking on the cache's write lock here,
+  // because writes are rare (once every 2 minutes, and on first-time asked fields)
+  PassiveFieldTypesCache(CacheBuilder.newBuilder().concurrencyLevel(1).build()) with LazyLogging {
 
-  val props = Props(classOf[PassiveFieldTypesCache.PassiveFieldTypesCacheActor], crud, true, cache, ec)
+  private val props = Props(classOf[PassiveFieldTypesCache.PassiveFieldTypesCacheActor], crud, true, cache, ec)
   override def createActor: ActorRef = sys.actorOf(props,"NbgPassiveFieldTypesCache_" + PassiveFieldTypesCache.uniqueIdentifierForActorName)
 }
-class ObgPassiveFieldTypesCache(crud: CRUDServiceFS, ec: ExecutionContext, sys: ActorSystem) extends PassiveFieldTypesCache with LazyLogging {
+class ObgPassiveFieldTypesCache(crud: CRUDServiceFS, ec: ExecutionContext, sys: ActorSystem) extends
+  // cache's concurrencyLevel set to 1, so we should avoid useless updates,
+  // nevertheless, it's okay to risk blocking on the cache's write lock here,
+  // because writes are rare (once every 2 minutes, and on first-time asked fields)
+  PassiveFieldTypesCache(CacheBuilder.newBuilder().concurrencyLevel(1).build())  with LazyLogging {
 
-  val props = Props(classOf[PassiveFieldTypesCache.PassiveFieldTypesCacheActor], crud, false, cache, ec)
+  private val props = Props(classOf[PassiveFieldTypesCache.PassiveFieldTypesCacheActor], crud, false, cache, ec)
   override def createActor: ActorRef = sys.actorOf(props,"ObgPassiveFieldTypesCache_" + PassiveFieldTypesCache.uniqueIdentifierForActorName)
 }

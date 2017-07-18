@@ -26,7 +26,7 @@ import cmwell.web.ld.exceptions.{PrefixAmbiguityException, UnretrievableIdentifi
 import cmwell.ws.util.PrefixRequirement
 import com.typesafe.scalalogging.LazyLogging
 import cmwell.syntaxutils._
-import ld.cmw.PassiveFieldTypesCache
+import ld.cmw.{PassiveFieldTypesCache, PassiveFieldTypesCacheTrait}
 import logic.CRUDServiceFS
 
 import scala.concurrent.{ExecutionContext, Future, Promise, duration}
@@ -99,7 +99,7 @@ case class RawMultiFieldFilter(override val fieldOperator: FieldOperator = Must,
 object RawFieldFilter extends PrefixRequirement {
   private[this] val bo1 = scala.collection.breakOut[Seq[RawFieldFilter],FieldFilter,Vector[FieldFilter]]
   private[this] val bo2 = scala.collection.breakOut[Set[String],FieldFilter,Vector[FieldFilter]]
-  def eval(rff: RawFieldFilter, cache: PassiveFieldTypesCache,cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[FieldFilter] = rff match {
+  def eval(rff: RawFieldFilter, cache: PassiveFieldTypesCacheTrait, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[FieldFilter] = rff match {
     case UnevaluatedQuadFilter(fo,vo,alias) => {
       val fieldFilterWithExplicitUrlOpt = cmwellRDFHelper.getQuadUrlForAlias(alias).map(v => SingleFieldFilter(fo, vo, "system.quad", Some(v)))
       prefixRequirement(fieldFilterWithExplicitUrlOpt.nonEmpty, s"The alias '$alias' provided for quad in search does not exist. Use explicit quad URL, or register a new alias using `graphAlias` meta operation.")
@@ -177,13 +177,13 @@ object RawSortParam extends LazyLogging {
 
 object FieldKey extends LazyLogging with PrefixRequirement  {
   
-  def eval(fieldKey: Either[UnresolvedFieldKey,DirectFieldKey], cache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[Set[String]] = fieldKey match {
+  def eval(fieldKey: Either[UnresolvedFieldKey,DirectFieldKey], cache: PassiveFieldTypesCacheTrait, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext): Future[Set[String]] = fieldKey match {
     case Right(NnFieldKey(key)) if key.startsWith("system.") || key.startsWith("content.") || key.startsWith("link.")  => Future.successful(Set(key))
     case Right(dFieldKey) => enrichWithTypes(dFieldKey, cache)
     case Left(uFieldKey) => resolve(uFieldKey, cmwellRDFHelper).flatMap(enrichWithTypes(_,cache))
   }
 
-  def enrichWithTypes(fk: FieldKey, cache: PassiveFieldTypesCache): Future[Set[String]] = {
+  def enrichWithTypes(fk: FieldKey, cache: PassiveFieldTypesCacheTrait): Future[Set[String]] = {
     cache.get(fk).map(_.collect {
       case c if c != 's' => s"$c$$${fk.internalKey}"
     } + fk.internalKey )

@@ -4,14 +4,14 @@ import javax.inject._
 
 import com.typesafe.scalalogging.LazyLogging
 import controllers.NbgToggler
-import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache, PassiveFieldTypesCache}
+import ld.cmw.PassiveFieldTypesCacheTrait
 import logic.CRUDServiceFS
 import wsutil.FieldKey
 
 import scala.concurrent.{ExecutionContext, Future}
 
 class AggregateBothOldAndNewTypesCaches(crudService: CRUDServiceFS,
-                                        tbg: NbgToggler) extends PassiveFieldTypesCache with LazyLogging {
+                                        tbg: NbgToggler) extends PassiveFieldTypesCacheTrait with LazyLogging {
 
   def crudServiceFS: CRUDServiceFS = crudService
   def nbg: Boolean = tbg.get
