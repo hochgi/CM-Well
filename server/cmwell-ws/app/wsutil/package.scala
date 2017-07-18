@@ -455,7 +455,8 @@ package object wsutil extends LazyLogging {
                nbg: Boolean)(implicit ec: ExecutionContext): Future[(Seq[Infoton],Seq[Infoton])] = {
     val expansionFuncsFut = Future.traverse(filteredFields) {
       case FilteredField(JokerPattern, rffo) => Future.successful({ (internalFieldName: String) => true } -> rffo)
-      case FilteredField(FieldKeyPattern(rfk: FieldKey), rffo) => Future.successful((rfk.internalKey == _,rffo))
+      case FilteredField(FieldKeyPattern(Right(dfk)), rffo) => Future.successful((dfk.internalKey == _,rffo))
+      case FilteredField(FieldKeyPattern(Left(rfk)), rffo) => FieldKey.resolve(rfk,cmwellRDFHelper).map(fk => (fk.internalKey == _,rffo))
       case FilteredField(NsWildCard(HashedNsPattern(hash)), rffo) => Future.successful({ (internalFieldName: String) => internalFieldName.endsWith(s".$hash") } -> rffo)
       case FilteredField(NsWildCard(rnp: ResolvedNsPattern), rffo) => rnp.resolve(cmwellRDFHelper).map(hash => { (internalFieldName: String) => internalFieldName.endsWith(s".$hash") } -> rffo)
     }

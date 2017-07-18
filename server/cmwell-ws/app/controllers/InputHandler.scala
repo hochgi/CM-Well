@@ -441,7 +441,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                                 }, 10.seconds)
                                 HashedFieldKey(f, l)
                               }.recover{
-                                case _ if fk.isInstanceOf[PrefixFieldKey] => NnFieldKey(fk.externalKey)
+                                case _ if fk.isInstanceOf[UnresolvedPrefixFieldKey] => NnFieldKey(fk.externalKey)
                               }.get
                             }
                             case Failure(e) => throw e
