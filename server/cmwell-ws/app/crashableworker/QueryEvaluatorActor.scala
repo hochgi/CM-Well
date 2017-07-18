@@ -71,11 +71,17 @@ object WorkerMain extends App with LazyLogging {
   val oDataFetcher = new DataFetcherImpl(Config.defaultConfig,crudServiceFS,false)
   val nJenaArqExtensionsUtils = new JenaArqExtensionsUtils(nArqCache, true, crudServiceFS.nbgPassiveFieldTypesCache, cmwellRDFHelper, nDataFetcher)
   val oJenaArqExtensionsUtils = new JenaArqExtensionsUtils(oArqCache, false, crudServiceFS.obgPassiveFieldTypesCache, cmwellRDFHelper, oDataFetcher)
-
   lazy val jenaArqExtensions = JenaArqExtensions.get(nJenaArqExtensionsUtils,oJenaArqExtensionsUtils)
 
-  val nRef = Grid.create(classOf[QueryEvaluatorActor], "NQueryEvaluatorActor",true,crudServiceFS,nArqCache,nJenaArqExtensionsUtils, nDataFetcher)
-  val oRef = Grid.create(classOf[QueryEvaluatorActor], "OQueryEvaluatorActor",false,crudServiceFS,oArqCache,oJenaArqExtensionsUtils, oDataFetcher)
+  val nJarsImporter = new JarsImporter(crudServiceFS,true)
+  val oJarsImporter = new JarsImporter(crudServiceFS,false)
+  val nQueriesImporter = new QueriesImporter(crudServiceFS,true)
+  val oQueriesImporter = new QueriesImporter(crudServiceFS,false)
+  val nSourcesImporter = new SourcesImporter(crudServiceFS,true)
+  val oSourcesImporter = new SourcesImporter(crudServiceFS,false)
+
+  val nRef = Grid.create(classOf[QueryEvaluatorActor], "NQueryEvaluatorActor",true,crudServiceFS,nArqCache,nJenaArqExtensionsUtils, nDataFetcher, nJarsImporter, nQueriesImporter, nSourcesImporter)
+  val oRef = Grid.create(classOf[QueryEvaluatorActor], "OQueryEvaluatorActor",false,crudServiceFS,oArqCache,oJenaArqExtensionsUtils, oDataFetcher, oJarsImporter, oQueriesImporter, oSourcesImporter)
 
   Grid.system.actorOf(Props(classOf[QueryEvaluatorActorWatcher], nRef), "NQueryEvaluatorActorWatcher")
   Grid.system.actorOf(Props(classOf[QueryEvaluatorActorWatcher], oRef), "OQueryEvaluatorActorWatcher")
@@ -115,7 +121,11 @@ class QueryEvaluatorActor(nbg: Boolean,
                           crudServiceFS: CRUDServiceFS,
                           arqCache: ArqCache,
                           jenaArqExtensionsUtils: JenaArqExtensionsUtils,
-                          dataFetcher: DataFetcher) extends Actor with SpFileUtils {
+                          dataFetcher: DataFetcher,
+                          jarsImporter: JarsImporter,
+                          queriesImporter: QueriesImporter,
+                          sourcesImporter: SourcesImporter) extends Actor with SpFileUtils {
+
   import QueryEvaluatorActor._
   private case class SpResponse(sender: ActorRef, queryResponse: QueryResponse)
   private case class SpFailure(sender: ActorRef, ex: Throwable)
@@ -153,7 +163,7 @@ class QueryEvaluatorActor(nbg: Boolean,
       updateActiveQueries(+1)
 
 
-      Try(paq.evaluate()) match {
+      Try(paq.evaluate(jarsImporter,queriesImporter,sourcesImporter)) match {
         case Success(queryResults) => {
           val results = queryResults.flatMap(rawDataToResponseMsg(_, paq.rp.forceUsingFile))
           val originalSender = sender

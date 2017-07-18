@@ -77,11 +77,7 @@ import scala.util.{Failure, Random, Success, Try}
 @Singleton
 class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS, nbgToggler: NbgToggler)(implicit ec: ExecutionContext) extends Controller with LazyLogging with TypeHelpers {
 
-  val sourcesImporter = new SourcesImporter(crudServiceFS)
-  val jarsImporter = new JarsImporter(crudServiceFS)
-  val queriesImporter = new QueriesImporter(crudServiceFS)
-
-  val parser = new SPParser(queriesImporter, jarsImporter, sourcesImporter)
+  val parser = new SPParser
 
   def handleSparqlPost(formatByRest: String = "") = Action.async(parse.tolerantText) {
     implicit req =>
@@ -169,7 +165,7 @@ object SpHandler extends LazyLogging {
 
 
 
-class SPParser(queriesImporter: QueriesImporter, jarsImporter: JarsImporter, sourcesImporter: SourcesImporter) extends RegexParsers {
+class SPParser extends RegexParsers {
 
   val spacesOrTabs = "[\\t ]*".r
   val whiteSpaces = """\s*""".r
@@ -206,7 +202,7 @@ class SPParser(queriesImporter: QueriesImporter, jarsImporter: JarsImporter, sou
   def imports: Parser[Seq[String]] = importHeadline ~> importRep
 
   val sparql = "(?i)sparql".r ^^ {_ => {
-    (sources: Seq[String], imports: Seq[String], queries: Seq[String]) => (rp: RequestParameters) => SparqlQuery(sources, imports, queries, rp, queriesImporter, jarsImporter, sourcesImporter)
+    (sources: Seq[String], imports: Seq[String], queries: Seq[String]) => (rp: RequestParameters) => SparqlQuery(sources, imports, queries, rp)
   }}
 
   val gremlin = "(?i)gremlin".r ^^ {_ => {
@@ -346,7 +342,7 @@ abstract class PopulateAndQuery {
   def sources: Seq[String]
   def queries: Seq[String]
   val rp: RequestParameters
-  def evaluate(): Future[String]
+  def evaluate(jarsImporter: JarsImporter,queriesImporter: QueriesImporter,sourcesImporter: SourcesImporter): Future[String]
 
   def isTiming = rp.verbose && rp.format == "ascii"
   def isDumping = rp.showGraph && rp.format == "ascii"
@@ -438,10 +434,7 @@ abstract class PopulateAndQuery {
 case class SparqlQuery( sources: Seq[String],
                         imports: Seq[String],
                         queries: Seq[String],
-                        rp: RequestParameters,
-                        queriesImporter: QueriesImporter,
-                        jarsImporter: JarsImporter,
-                        sourcesImporter: SourcesImporter) extends PopulateAndQuery {
+                        rp: RequestParameters) extends PopulateAndQuery {
 
   override type T = Either[String,Dataset]
 
@@ -449,7 +442,7 @@ case class SparqlQuery( sources: Seq[String],
 
   val concreteQueries = queries.map(populatePlaceHolders)
 
-  override def evaluate(): Future[String] = {
+  override def evaluate(jarsImporter: JarsImporter,queriesImporter: QueriesImporter,sourcesImporter: SourcesImporter): Future[String] = {
 
     //todo t._2 t._1.map m._1 + t._1 ... WAT? Please use case classes or something to make this fold more readable.
     //todo also - why there's the `first`? Can't we reduceLeft instead? This is not DRY.
@@ -632,7 +625,7 @@ case class GremlinQuery(sources: Seq[String], imports: Seq[String], queries: Seq
   def engine = SgEngines.engines.getOrElse("Gremlin", throw new Exception("Could not load Gremlin engine!"))
 
   // todo. Stay DRY. Massage some of PopulateAndQuery code to have a basic String evaluate.
-  override def evaluate(): Future[String] = {
+  override def evaluate(jarsImporter: JarsImporter,queriesImporter: QueriesImporter,sourcesImporter: SourcesImporter): Future[String] = {
     val ntriplesFutures: Seq[Future[(Option[TimedRequest],Either[String,Dataset])]] = populate(extractBody)
 
     //todo finish implement verbodeMode for Gremlin as well
@@ -712,8 +705,8 @@ trait Importer[A] { this: LazyLogging =>
 
   def invalidateCaches(): Unit
 
-  def readFileInfoton(path: String): Future[FileInfotonContent] = {
-    crudServiceFS.getInfoton(path, None, None).map(res => (res: @unchecked) match {
+  def readFileInfoton(path: String, nbg: Boolean): Future[FileInfotonContent] = {
+    crudServiceFS.getInfoton(path, None, None, nbg).map(res => (res: @unchecked) match {
       case Some(Everything(FileInfoton(_, _, _, _, fields, Some(content),_))) => FileInfotonContent(content.data.get, fields.getOrElse(Map()))
       case x => logger.debug(s"Could not fetch $path, got $x"); throw new RuntimeException(s"Could not fetch $path")
     })
@@ -725,8 +718,7 @@ trait Importer[A] { this: LazyLogging =>
 //TODO: if really needed, do it appropriately with injection
 //object Importers { def all = Seq[Importer[_]](QueriesImporter, JarsImporter, SourcesImporter) }
 
-@Singleton
-class QueriesImporter @Inject()(override val crudServiceFS: CRUDServiceFS) extends Importer[String] with LazyLogging {
+class QueriesImporter(override val crudServiceFS: CRUDServiceFS, nbg: Boolean) extends Importer[String] with LazyLogging {
   import cmwell.util.collections.LoadingCacheExtensions
   import cmwell.util.concurrent.travector
 
@@ -779,10 +771,10 @@ class QueriesImporter @Inject()(override val crudServiceFS: CRUDServiceFS) exten
   private def listChildren(path: String) =
     crudServiceFS.thinSearch(Some(PathFilter(path, descendants = false))).map(_.thinResults.map(_.path))
 
-  private def readTextualFileInfoton(path: String) = readFileInfoton(path).map{ case FileInfotonContent(data, _) => new String(data, "UTF-8")}
+  private def readTextualFileInfoton(path: String) = readFileInfoton(path, nbg).map{ case FileInfotonContent(data, _) => new String(data, "UTF-8")}
 }
 
-class JarsImporter(override val crudServiceFS: CRUDServiceFS) extends Importer[JenaFunction] with SpFileUtils { self =>
+class JarsImporter(override val crudServiceFS: CRUDServiceFS, nbg: Boolean) extends Importer[JenaFunction] with SpFileUtils { self =>
   import cmwell.util.collections.LoadingCacheExtensions
   import cmwell.util.concurrent.travector
   import cmwell.util.loading._
@@ -795,7 +787,7 @@ class JarsImporter(override val crudServiceFS: CRUDServiceFS) extends Importer[J
     CacheBuilder.newBuilder().maximumSize(200).expireAfterAccess(15, TimeUnit.MINUTES).removalListener(new RemovalListener[String, LoadedJar] {
       override def onRemoval(notification: RemovalNotification[String, LoadedJar]): Unit = { new File(notification.getValue.tempPhysicalPath).delete()
       }}).build(new CacheLoader[String, LoadedJar] {
-        override def load(key: String) = self.load(Await.result(readFileInfoton(key), 15.seconds))
+        override def load(key: String) = self.load(Await.result(readFileInfoton(key, nbg), 15.seconds))
       })
 
   override def fetch(paths: Seq[String]): Future[Vector[JenaFunction]] =
@@ -824,7 +816,7 @@ class JarsImporter(override val crudServiceFS: CRUDServiceFS) extends Importer[J
 // Since we know the className in advance, we can use it aside with the implementation in order to register in Jena's FunctionRegistry.
 case class NamedAnonJenaFuncImpl(name: String, impl: JenaFunction)
 
-class SourcesImporter(override val crudServiceFS: CRUDServiceFS) extends Importer[NamedAnonJenaFuncImpl] with LazyLogging {
+class SourcesImporter(override val crudServiceFS: CRUDServiceFS, nbg: Boolean) extends Importer[NamedAnonJenaFuncImpl] with LazyLogging {
   import cmwell.util.collections.LoadingCacheExtensions
   import cmwell.util.concurrent.travector
 
@@ -838,7 +830,7 @@ class SourcesImporter(override val crudServiceFS: CRUDServiceFS) extends Importe
   private lazy val functionsCache: LoadingCache[String, NamedAnonJenaFuncImpl] =
     CacheBuilder.newBuilder().maximumSize(200).expireAfterAccess(15, TimeUnit.MINUTES).
       build(new CacheLoader[String, NamedAnonJenaFuncImpl] {
-        override def load(key: String) = eval(new String(Await.result(readFileInfoton(key), 15.seconds).content,"UTF-8"), className = extractFileNameFromPath(key).replace(".scala",""))
+        override def load(key: String) = eval(new String(Await.result(readFileInfoton(key, nbg), 15.seconds).content,"UTF-8"), className = extractFileNameFromPath(key).replace(".scala",""))
       })
 
   def eval(source: String, className: String): NamedAnonJenaFuncImpl = { // WARNING: Black magic.
