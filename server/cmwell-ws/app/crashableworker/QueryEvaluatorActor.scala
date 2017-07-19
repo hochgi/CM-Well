@@ -64,7 +64,7 @@ object WorkerMain extends App with LazyLogging {
   val injector = Guice.createInjector(new CWModule())
   val nbgToggler = injector.getInstance(classOf[NbgToggler])
   val crudServiceFS = new CRUDServiceFS(nbgToggler)(implicitly,Grid.system)
-  val cmwellRDFHelper = new CMWellRDFHelper(crudServiceFS)
+  val cmwellRDFHelper = new CMWellRDFHelper(crudServiceFS,implicitly)
   val nArqCache = new ArqCache(crudServiceFS,true)
   val oArqCache = new ArqCache(crudServiceFS,false)
   val nDataFetcher = new DataFetcherImpl(Config.defaultConfig,crudServiceFS,true)

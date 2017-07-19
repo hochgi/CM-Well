@@ -113,7 +113,7 @@ class TripleStore(dataFetcher: DataFetcherImpl, cmwellRDFHelper: CMWellRDFHelper
   }
 
   // todo propagate withoutMeta boolean from request to here. If withoutMeta is set to false, we need to make sure it won't fail in URIFieldKey(...)
-  val f: String => Option[(String,Option[String])] = {(o: Option[String]) => o.map(u => u -> Option.empty[String])} compose cmwellRDFHelper.hashToUrl
+  val f: String => Option[(String,Option[String])] = {(o: Option[String]) => o.map(u => u -> Option.empty[String])} compose {s => cmwellRDFHelper.hashToUrl(s,tbg.get)}
   private val nullFormatter = new cmwell.formats.RDFFormatter("cmwell", f, withoutMeta = true, filterOutBlanks = false, forceUniqueness = false) {
     override def format: cmwell.formats.FormatType = ???
     override def render(formattable: Formattable): String = ???

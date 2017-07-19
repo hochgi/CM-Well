@@ -83,13 +83,13 @@ class FormatterManager @Inject()(C: CMWellRDFHelper) extends LazyLogging {
   //var is OK as not volatile, cache, frequent reads + rare writes of immutable object pattern (Gilad + Dudi)
   private[this] var rdfFormatterMap = Map[String, RDFFormatter]()
 
-  def innerToSimpleFieldName(fieldName: String): String = {
+  def innerToSimpleFieldName(nbg: Boolean)(fieldName: String): String = {
     fieldName.lastIndexOf('.') match {
       case -1 => fieldName
       case i => {
         val (first, dotLast) = fieldName.splitAt(i)
         val last = dotLast.tail
-        C.hashToUrlAndPrefix(last) match {
+        C.hashToUrlAndPrefix(last, nbg) match {
           case None => fieldName
           case Some((_, prefix)) => s"$first.$prefix"
         }
@@ -98,9 +98,30 @@ class FormatterManager @Inject()(C: CMWellRDFHelper) extends LazyLogging {
   }
 
 
-  JsonFormatter.init(innerToSimpleFieldName)
-  PrettyJsonFormatter.init(innerToSimpleFieldName)
-  YamlFormatter.init(innerToSimpleFieldName)
+  private lazy val nJsonFormatter = new JsonFormatter(innerToSimpleFieldName(true))
+  private lazy val oJsonFormatter = new JsonFormatter(innerToSimpleFieldName(false))
+
+  def jsonFormatter(nbg: Boolean): JsonFormatter = {
+    if (nbg) nJsonFormatter
+    else oJsonFormatter
+  }
+
+  private lazy val nPrettyJsonFormatter = new PrettyJsonFormatter(innerToSimpleFieldName(true))
+  private lazy val oPrettyJsonFormatter = new PrettyJsonFormatter(innerToSimpleFieldName(false))
+
+  def jsonFormatter(nbg: Boolean): PrettyJsonFormatter = {
+    if (nbg) nPrettyJsonFormatter
+    else oPrettyJsonFormatter
+  }
+
+  private lazy val nYamlFormatter = new YamlFormatter(innerToSimpleFieldName(true))
+  private lazy val oYamlFormatter = new YamlFormatter(innerToSimpleFieldName(false))
+
+  def yamlFormatter(nbg: Boolean): YamlFormatter = {
+    if (nbg) nYamlFormatter
+    else oYamlFormatter
+  }
+
   val csvFormatter = CSVFormatter(prettyMangledField compose innerToSimpleFieldName)
   val prettyCsvFormatter = new PrettyCsvFormatter(innerToSimpleFieldName)
   val fieldTranslatorForRichRDF: String => Option[(String,Option[String])] = C.hashToUrlAndPrefix _ andThen (_.map{ case (url,prefix) => url -> Option(prefix)})

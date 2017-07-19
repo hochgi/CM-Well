@@ -262,10 +262,23 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                       x match {
                         case "default" => FNull(None)
                         case "*" => FNull(Some("*"))
-                        case alias if !FReference.isUriRef(alias) => cmwellRDFHelper.getQuadUrlForAlias(alias) match {
-                          //TODO: future optimization: check replace-mode's alias before invoking jena and parsing RDF document
-                          case None => throw new UnretrievableIdentifierException(s"The alias '$alias' provided for quad as replace-mode's argument does not exist. Use explicit quad URL, or register a new alias using `graphAlias` meta operation.")
-                          case someURI => FNull(someURI)
+                        case alias if !FReference.isUriRef(alias) => {
+
+                          def optionToFNull(o: Option[String]): FNull = o match {
+                            //TODO: future optimization: check replace-mode's alias before invoking jena and parsing RDF document
+                            case None => throw new UnretrievableIdentifierException(s"The alias '$alias' provided for quad as replace-mode's argument does not exist. Use explicit quad URL, or register a new alias using `graphAlias` meta operation.")
+                            case someURI => FNull(someURI)
+                          }
+
+                          if(Settings.newBGFlag && Settings.oldBGFlag) {
+                            val x = cmwellRDFHelper.getQuadUrlForAlias(alias,true)
+                            val y = cmwellRDFHelper.getQuadUrlForAlias(alias,false)
+                            require(x == y,s"inconsistency between new[$x] & old[$y] data path. don't use quad aliasing")
+                            optionToFNull(x)
+                          }
+                          else if(Settings.newBGFlag) optionToFNull(cmwellRDFHelper.getQuadUrlForAlias(alias,true))
+                          else if(Settings.oldBGFlag) optionToFNull(cmwellRDFHelper.getQuadUrlForAlias(alias,false))
+                          else throw new IllegalStateException("Neither old or new bg are enabled!")
                         }
                         case uri => FNull(Some(uri))
                       }

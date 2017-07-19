@@ -57,6 +57,7 @@ import scala.util.{Failure, Success, Try}
 // TODO 2. Remove JenaArqExtensions :( But keep its DataFetcher. Should be closer to TripleStore
 // TODO 3. Propagate query parameters to the proper places. Implement Verbose and Explain.
 // TODO 4. Add optimizations, support Range Queries, add special functions, run on SPARK...
+// TODO 5. propagate nbg properly according to request, or leave as is, knowing it's kinda broken (as in inconsistent), but will be "fixed" when old data path is discontinued
 
 /**
   * Created by yaakov on 5/24/17.
