@@ -62,42 +62,38 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
 
   import CMWellRDFHelper._
 
-  def loadNsCachesWith(infotons: Seq[Infoton]): Unit = infotons.foreach{ i =>
 
-    def fieldsToOpt(fieldName: String)(fMap: Map[String,Set[FieldValue]]): Option[String] = {
-      val uValSetOpt = fMap.get(fieldName)
-      uValSetOpt.flatMap{ vSet =>
-        if(vSet.size == 1) vSet.headOption.flatMap {
-          case FString(value,_,_) => Some(value)
-          case FReference(value,_) => Some(value)
-          case weirdValue => {
-            logger.error(s"weird value from meta ns: $weirdValue")
-            None
+  private[this] val hashToUrlPermanentCache: LoadingCache[String,String] = CacheBuilder
+    .newBuilder()
+    .build {
+      new CacheLoader[String, String] {
+        override def load(hash: String): String = {
+          val vSet = hashToInfoton(hash).get.fields.get("url")
+          require(vSet.size == 1, "only 1 url value is allowed!")
+          vSet.head match {
+            case FReference(url,_) => url
+            case FString(url,_,_) => {
+              logger.warn(s"got $url for 'url' field for hash=$hash, but it is `FString` instead of `FReference`")
+              url
+            }
+            case weirdFValue => {
+              logger.error(s"got weird value: $weirdFValue")
+              weirdFValue.value.toString
+            }
           }
-        }
-        else {
-          logger.error(s"ns $fieldName loading failed because amount != 1: $vSet")
-          None
         }
       }
     }
 
-    val urlOpt = i.fields.flatMap(fieldsToOpt("url"))
-    val prefixOpt = i.fields.flatMap(fieldsToOpt("prefix"))
-    val nsIdentifier = i.path.drop("/meta/ns/".length)
-
-    hashToMetaNsInfotonCache.put(nsIdentifier,i)
-
-    urlOpt.foreach{url =>
-      hashToUrlPermanentCache.put(nsIdentifier,url)
-      urlToMetaNsInfotonCache.put(url,i)
-      urlToHashPermanentCache.put(url,nsIdentifier)
+  private[this] val urlToHashPermanentCache: LoadingCache[String,String] = CacheBuilder
+    .newBuilder()
+    .build {
+      new CacheLoader[String, String] {
+        override def load(url: String): String = {
+          urlToInfoton(url).get.path.drop("/meta/ns/".length)
+        }
+      }
     }
-
-    prefixOpt.foreach{prefix =>
-      prefixToHashCache.put(prefix,nsIdentifier)
-    }
-  }
 
   /**
    *
@@ -140,28 +136,6 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
       }
     }
 
-  private[this] val hashToUrlPermanentCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .build {
-    new CacheLoader[String, String] {
-      override def load(hash: String): String = {
-        val vSet = hashToInfoton(hash).get.fields.get("url")
-        require(vSet.size == 1, "only 1 url value is allowed!")
-        vSet.head match {
-          case FReference(url,_) => url
-          case FString(url,_,_) => {
-            logger.warn(s"got $url for 'url' field for hash=$hash, but it is `FString` instead of `FReference`")
-            url
-          }
-          case weirdFValue => {
-            logger.error(s"got weird value: $weirdFValue")
-            weirdFValue.value.toString
-          }
-        }
-      }
-    }
-  }
-
   private[this] val urlToMetaNsInfotonCache: LoadingCache[String,Infoton] = CacheBuilder
     .newBuilder()
     .expireAfterWrite(2, TimeUnit.MINUTES)
@@ -201,25 +175,9 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
       }
     }
 
-  private[this] val urlToHashPermanentCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .build {
-    new CacheLoader[String, String] {
-      override def load(url: String): String = {
-        urlToInfoton(url).get.path.drop("/meta/ns/".length)
-      }
-    }
-  }
-
-  def hashToUrl(hash: String): Option[String] = Try(hashToUrlPermanentCache.getBlocking(hash)).toOption
-
-  def urlToHash(url: String): Option[String] = Try(urlToHashPermanentCache.getBlocking(url)).toOption
-
-  def urlToHashAsync(url: String)(implicit ec: ExecutionContext): Future[String] = urlToHashPermanentCache.getAsync(url)(ec)
-
   /**
-   *
-   */
+    *
+    */
   private[this] val prefixToHashCache: LoadingCache[String,String] = CacheBuilder
     .newBuilder()
     .expireAfterWrite(2, TimeUnit.MINUTES)
@@ -231,6 +189,84 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
         }
       }
     }
+
+  private[this] val graphToAliasCache: LoadingCache[String,String] = CacheBuilder
+    .newBuilder()
+    .maximumSize(Settings.quadsCacheSize)
+    .expireAfterWrite(2, TimeUnit.MINUTES)
+    .build{
+      new CacheLoader[String,String] {
+        override def load(url: String): String = {
+          val f = getAliasForQuadUrlAsyncActual(url)
+          f.onComplete{
+            case Success(Some(alias)) => aliasToGraphCache.put(alias,url)
+            case Success(None) => logger.trace(s"load for graph: $url is empty")
+            case Failure(e) => logger.error(s"load for $url failed",e)
+          }(scala.concurrent.ExecutionContext.Implicits.global)
+          Await.result(f, 10.seconds).get
+        }
+      }
+    }
+
+  private[this] val aliasToGraphCache: LoadingCache[String,String] = CacheBuilder
+    .newBuilder()
+    .maximumSize(Settings.quadsCacheSize)
+    .expireAfterWrite(2, TimeUnit.MINUTES)
+    .build{
+      new CacheLoader[String,String] {
+        override def load(alias: String): String = {
+          val f = getQuadUrlForAliasAsyncActual(alias)
+          f.onComplete{
+            case Success(graph) => graphToAliasCache.put(graph,alias)
+            case Failure(e) => logger.error(s"load for $alias failed",e)
+          }(scala.concurrent.ExecutionContext.Implicits.global)
+          Await.result(f, 10.seconds)
+        }
+      }
+    }
+
+  def loadNsCachesWith(infotons: Seq[Infoton]): Unit = infotons.foreach{ i =>
+
+    def fieldsToOpt(fieldName: String)(fMap: Map[String,Set[FieldValue]]): Option[String] = {
+      val uValSetOpt = fMap.get(fieldName)
+      uValSetOpt.flatMap{ vSet =>
+        if(vSet.size == 1) vSet.head match {
+          case FString(value,_,_) => Some(value)
+          case FReference(value,_) => Some(value)
+          case weirdValue => {
+            logger.error(s"weird value [$weirdValue] from meta ns for field [$fieldName]")
+            None
+          }
+        }
+        else {
+          logger.error(s"ns $fieldName loading failed because amount != 1: $vSet")
+          None
+        }
+      }
+    }
+
+    val urlOpt = i.fields.flatMap(fieldsToOpt("url"))
+    val prefixOpt = i.fields.flatMap(fieldsToOpt("prefix"))
+    val nsIdentifier = i.path.drop("/meta/ns/".length)
+
+    hashToMetaNsInfotonCache.put(nsIdentifier,i)
+
+    urlOpt.foreach{url =>
+      hashToUrlPermanentCache.put(nsIdentifier,url)
+      urlToMetaNsInfotonCache.put(url,i)
+      urlToHashPermanentCache.put(url,nsIdentifier)
+    }
+
+    prefixOpt.foreach{prefix =>
+      prefixToHashCache.put(prefix,nsIdentifier)
+    }
+  }
+
+  def hashToUrl(hash: String): Option[String] = Try(hashToUrlPermanentCache.getBlocking(hash)).toOption
+
+  def urlToHash(url: String): Option[String] = Try(urlToHashPermanentCache.getBlocking(url)).toOption
+
+  def urlToHashAsync(url: String)(implicit ec: ExecutionContext): Future[String] = urlToHashPermanentCache.getAsync(url)(ec)
 
   /**
    *
@@ -267,12 +303,167 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
     f.map(t => t._1 -> t._2)(scala.concurrent.ExecutionContext.Implicits.global)
   }
 
+  def hashToInfoton(hash: String): Option[Infoton] = Try(hashToMetaNsInfotonCache.getBlocking(hash)).toOption
+
+  def urlToInfoton(url: String): Option[Infoton] = Try(urlToMetaNsInfotonCache.getBlocking(url)).toOption
+
+  /**
+   *
+   * @param hash
+   * @return url
+   */
+  def hashToUrlAndPrefix(hash: String): Option[(String,String)] =
+    hashToInfoton(hash).flatMap {
+      infoton => {
+        infoton.fields.flatMap { fieldsMap =>
+          fieldsMap.get("url").map { valueSet =>
+            require(valueSet.size == 1, s"/meta/ns infoton must contain a single url value: $infoton")
+            val uri = valueSet.head.value match {
+              case url: String => {
+                hashToUrlPermanentCache.put(hash,url)
+                urlToHashPermanentCache.put(url,hash)
+                url
+              }
+              case any => throw new RuntimeException(s"/meta/ns infoton's url field must contain a string value (got: ${any.getClass} for $infoton)")
+            }
+            val prefix = fieldsMap.get("prefix").map{ prefixSet =>
+              require(valueSet.size == 1, s"/meta/ns infoton must contain a single prefix value: $infoton")
+              prefixSet.head.value match {
+                case prefix: String => prefix
+                case any => throw new RuntimeException(s"/meta/ns infoton's url field must contain a string value (got: ${any.getClass} for $infoton)")
+              }
+            }
+            uri -> prefix.getOrElse{
+              logger.debug(s"retrieving prefix in the old method. we need to replace the infoton: $infoton")
+              infoton.path.drop("/meta/ns/".length)
+            }
+          }
+        }
+      }
+    }
+
   /**
    *
    * @param prefix
-   * @param withFallBack
    * @return
    */
+  def prefixToHash(prefix: String): Option[String] = Try(prefixToHashCache.getBlocking(prefix)).toOption
+
+  /**
+   *
+   * @param url as plain string
+   * @return corresponding hash, or if it's a new namespace, will return an available hash to register the meta infoton at,
+   *         paired with a boolean indicating if this is new or not/
+   */
+  def nsUrlToHash(url: String): (String,PrefixState) = {
+    def inner(hash: String): (String,PrefixState) = hashToInfoton(hash) match {
+      case None => hash -> Create
+      case Some(i) => {
+        require(i.fields.isDefined, s"must have non empty fields ($i)")
+        require(i.fields.get.contains("url"), s"must have url defined ($i)")
+        val valSet = i.fields.get("url")
+        require(valSet.size == 1, s"must have only 1 url ($i)")
+        valSet.head match {
+          case fv if fv.value.isInstanceOf[String] && fv.value.asInstanceOf[String] == url => hash -> Exists
+          case fv if fv.value.isInstanceOf[String] && fv.value.asInstanceOf[String] != url => inner(crc32base64(hash))
+          case fv => throw new RuntimeException(s"got weird value: $fv")
+        }
+      }
+    }
+
+
+    urlToHash(url) match {
+      case Some(nsIdentifier) => nsIdentifier -> Exists
+      case None => inner(crc32base64(url))
+    }
+
+//    //TODO: temp code (the `.map(...) expression`), once all meta is stabilized with prefixes, use the permanent cache method: urlToHash
+//    urlToInfoton(url).map(
+//      i => {//if prefix field is not defined (for old style /meta/ns infotons) return true, which means the field will be added
+//        val prefixState = i.fields.flatMap(_.get("prefix")) match {
+//          case None => Update
+//          case _ => Exists
+//        }
+//        i.path.drop("/meta/ns/".length) -> prefixState
+//      }
+//    ).getOrElse(inner(crc32base64(url)))
+  }
+
+  def getAliasForQuadUrl(graphName: String): Option[String] = Try(graphToAliasCache.get(graphName)).toOption
+
+  def getAliasForQuadUrlAsync(graph: String): Future[Option[String]] = {
+    val f = getAliasForQuadUrlAsyncActual(graph)
+    f.onComplete{
+      case Success(Some(alias)) => {
+        graphToAliasCache.put(graph,alias)
+        aliasToGraphCache.put(alias,graph)
+      }
+      case Success(None) => logger.info(s"graph: $graph could not be retrieved")
+      case Failure(e) => logger.error(s"getAliasForQuadUrlAsync for $graph failed",e)
+    }(scala.concurrent.ExecutionContext.Implicits.global)
+    f
+  }
+
+  def getQuadUrlForAlias(alias: String): Option[String] = Try(aliasToGraphCache.get(alias)).toOption
+
+  def getQuadUrlForAliasAsync(alias: String): Future[String] = {
+    val f = getQuadUrlForAliasAsyncActual(alias)
+    f.onComplete{
+      case Success(graph) => {
+        aliasToGraphCache.put(alias,graph)
+        graphToAliasCache.put(graph,alias)
+      }
+      case Failure(e) => logger.error(s"getQuadUrlForAliasAsync for $alias failed",e)
+    }(scala.concurrent.ExecutionContext.Implicits.global)
+    f
+  }
+
+  def getQuadUrlForAliasAsyncActual(alias: String): Future[String] = {
+    crudServiceFS.search(
+      pathFilter = Some(PathFilter("/meta/quad",false)),
+      fieldFilters = Some(FieldFilter(Should,Equals,"alias",alias)),
+      datesFilter = None,
+      withData = true).map {
+      case SearchResults(_,_,total,_,length,infotons,_) => {
+        require(total != 0, s"the alias $alias is not associated to any graph")
+
+        val url = {
+          val byUrl = infotons.groupBy(_.fields.flatMap(_.get("url")))
+          require(byUrl.size == 1, s"group by url must be unambiguous: $byUrl")
+
+          //TODO: eliminate intentional duplicates (same graph in `/meta/quad/crc32` & `/meta/quad/base64`), i.e. delete crc32 version as a side effect.
+          //TODO: if only crc32 version exists, replace it with base64 version
+          //i.e: byUrl.valuesIterator.foreach(...)
+
+          val urlSet = byUrl.keys.headOption.flatMap(identity)
+          require(urlSet.isDefined, s"url must have keys defined: $byUrl, $urlSet")
+
+          val urls = urlSet.toSeq.flatMap(identity)
+          require(urls.size == 1, s"must have exactly 1 URI: ${urls.mkString("[",",","]")}, fix any of this by using")
+
+          require(urls.head.value.isInstanceOf[String], "url value not a string")
+          urls.head.value.asInstanceOf[String]
+        }
+        url
+      }
+    }(scala.concurrent.ExecutionContext.Implicits.global)
+  }
+  
+  // in case of ambiguity between meta/ns infotons with same url, this will return the one that was not auto-generated
+  def getTheNonGeneratedMetaNsInfoton(url: String, infotons: Seq[Infoton]): Infoton = {
+    require(infotons.nonEmpty)
+    val it = Iterator.iterate(cmwell.util.string.Hash.crc32base64(url))(cmwell.util.string.Hash.crc32base64)
+    it.take(infotons.length+1).foldLeft(infotons) { case (z,h) => if(z.size == 1) z else infotons.filterNot(_.name==h) }.head
+  }
+
+  // private[this] section:
+
+  /**
+    *
+    * @param prefix
+    * @param withFallBack
+    * @return
+    */
   private[this] def getUrlForPrefixAsyncActual(prefix: String, withFallBack: Boolean = true): Future[(String,String,Either[Infoton,Infoton])] = {
 
     @inline def prefixRequirement(requirement: Boolean, message: => String): Unit = {
@@ -357,134 +548,10 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
     }(scala.concurrent.ExecutionContext.Implicits.global)
 
   // todo there must be a better way to achieve this. making ContentPortion abstract case class or such.
-  private def _infoton(content: ContentPortion) = content match {
+  private[this] def _infoton(content: ContentPortion) = content match {
     case Everything(i) => i
     case UnknownNestedContent(i) => i
     case _ => ???
-  }
-
-
-
-
-  def hashToInfoton(hash: String): Option[Infoton] = Try(hashToMetaNsInfotonCache.getBlocking(hash)).toOption
-
-  def urlToInfoton(url: String): Option[Infoton] = Try(urlToMetaNsInfotonCache.getBlocking(url)).toOption
-
-
-  /**
-   *
-   * @param hash
-   * @return url
-   */
-  def hashToUrlAndPrefix(hash: String): Option[(String,String)] =
-    hashToInfoton(hash).flatMap {
-      infoton => {
-        infoton.fields.flatMap { fieldsMap =>
-          fieldsMap.get("url").map { valueSet =>
-            require(valueSet.size == 1, s"/meta/ns infoton must contain a single url value: $infoton")
-            val uri = valueSet.head.value match {
-              case url: String => {
-                hashToUrlPermanentCache.put(hash,url)
-                urlToHashPermanentCache.put(url,hash)
-                url
-              }
-              case any => throw new RuntimeException(s"/meta/ns infoton's url field must contain a string value (got: ${any.getClass} for $infoton)")
-            }
-            val prefix = fieldsMap.get("prefix").map{ prefixSet =>
-              require(valueSet.size == 1, s"/meta/ns infoton must contain a single prefix value: $infoton")
-              prefixSet.head.value match {
-                case prefix: String => prefix
-                case any => throw new RuntimeException(s"/meta/ns infoton's url field must contain a string value (got: ${any.getClass} for $infoton)")
-              }
-            }
-            uri -> prefix.getOrElse{
-              logger.debug(s"retrieving prefix in the old method. we need to replace the infoton: $infoton")
-              infoton.path.drop("/meta/ns/".length)
-            }
-          }
-        }
-      }
-    }
-
-  /**
-   *
-   * @param prefix
-   * @return
-   */
-  def prefixToHash(prefix: String): Option[String] = Try(prefixToHashCache.getBlocking(prefix)).toOption
-
-
-  /**
-   *
-   * @param url as plain string
-   * @return corresponding hash, or if it's a new namespace, will return an available hash to register the meta infoton at,
-   *         paired with a boolean indicating if this is new or not/
-   */
-  def nsUrlToHash(url: String): (String,PrefixState) = {
-    def inner(hash: String): (String,PrefixState) = hashToInfoton(hash) match {
-      case None => hash -> Create
-      case Some(i) => {
-        require(i.fields.isDefined, s"must have non empty fields ($i)")
-        require(i.fields.get.contains("url"), s"must have url defined ($i)")
-        val valSet = i.fields.get("url")
-        require(valSet.size == 1, s"must have only 1 url ($i)")
-        valSet.head match {
-          case fv if fv.value.isInstanceOf[String] && fv.value.asInstanceOf[String] == url => hash -> Exists
-          case fv if fv.value.isInstanceOf[String] && fv.value.asInstanceOf[String] != url => inner(crc32base64(hash))
-          case fv => throw new RuntimeException(s"got weird value: $fv")
-        }
-      }
-    }
-
-
-    urlToHash(url) match {
-      case Some(nsIdentifier) => nsIdentifier -> Exists
-      case None => inner(crc32base64(url))
-    }
-
-//    //TODO: temp code (the `.map(...) expression`), once all meta is stabilized with prefixes, use the permanent cache method: urlToHash
-//    urlToInfoton(url).map(
-//      i => {//if prefix field is not defined (for old style /meta/ns infotons) return true, which means the field will be added
-//        val prefixState = i.fields.flatMap(_.get("prefix")) match {
-//          case None => Update
-//          case _ => Exists
-//        }
-//        i.path.drop("/meta/ns/".length) -> prefixState
-//      }
-//    ).getOrElse(inner(crc32base64(url)))
-  }
-
-  def getAliasForQuadUrl(graphName: String): Option[String] = Try(graphToAliasCache.get(graphName)).toOption
-
-  private[this] val graphToAliasCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .maximumSize(Settings.quadsCacheSize)
-    .expireAfterWrite(2, TimeUnit.MINUTES)
-    .build{
-    new CacheLoader[String,String] {
-      override def load(url: String): String = {
-        val f = getAliasForQuadUrlAsyncActual(url)
-        f.onComplete{
-          case Success(Some(alias)) => aliasToGraphCache.put(alias,url)
-          case Success(None) => logger.trace(s"load for graph: $url is empty")
-          case Failure(e) => logger.error(s"load for $url failed",e)
-        }(scala.concurrent.ExecutionContext.Implicits.global)
-        Await.result(f, 10.seconds).get
-      }
-    }
-  }
-
-  def getAliasForQuadUrlAsync(graph: String): Future[Option[String]] = {
-    val f = getAliasForQuadUrlAsyncActual(graph)
-    f.onComplete{
-      case Success(Some(alias)) => {
-        graphToAliasCache.put(graph,alias)
-        aliasToGraphCache.put(alias,graph)
-      }
-      case Success(None) => logger.info(s"graph: $graph could not be retrieved")
-      case Failure(e) => logger.error(s"getAliasForQuadUrlAsync for $graph failed",e)
-    }(scala.concurrent.ExecutionContext.Implicits.global)
-    f
   }
 
   private[this] def getAliasForQuadUrlAsyncActual(graphName: String): Future[Option[String]] = {
@@ -518,73 +585,5 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS) extends LazyLo
     }(scala.concurrent.ExecutionContext.Implicits.global)
   }
 
-  def getQuadUrlForAlias(alias: String): Option[String] = Try(aliasToGraphCache.get(alias)).toOption
-
-  private[this] val aliasToGraphCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .maximumSize(Settings.quadsCacheSize)
-    .expireAfterWrite(2, TimeUnit.MINUTES)
-    .build{
-    new CacheLoader[String,String] {
-      override def load(alias: String): String = {
-        val f = getQuadUrlForAliasAsyncActual(alias)
-        f.onComplete{
-          case Success(graph) => graphToAliasCache.put(graph,alias)
-          case Failure(e) => logger.error(s"load for $alias failed",e)
-        }(scala.concurrent.ExecutionContext.Implicits.global)
-        Await.result(f, 10.seconds)
-      }
-    }
-  }
-
-  def getQuadUrlForAliasAsync(alias: String): Future[String] = {
-    val f = getQuadUrlForAliasAsyncActual(alias)
-    f.onComplete{
-      case Success(graph) => {
-        aliasToGraphCache.put(alias,graph)
-        graphToAliasCache.put(graph,alias)
-      }
-      case Failure(e) => logger.error(s"getQuadUrlForAliasAsync for $alias failed",e)
-    }(scala.concurrent.ExecutionContext.Implicits.global)
-    f
-  }
-
-  def getQuadUrlForAliasAsyncActual(alias: String): Future[String] = {
-    crudServiceFS.search(
-      pathFilter = Some(PathFilter("/meta/quad",false)),
-      fieldFilters = Some(FieldFilter(Should,Equals,"alias",alias)),
-      datesFilter = None,
-      withData = true).map {
-      case SearchResults(_,_,total,_,length,infotons,_) => {
-        require(total != 0, s"the alias $alias is not associated to any graph")
-
-        val url = {
-          val byUrl = infotons.groupBy(_.fields.flatMap(_.get("url")))
-          require(byUrl.size == 1, s"group by url must be unambiguous: $byUrl")
-
-          //TODO: eliminate intentional duplicates (same graph in `/meta/quad/crc32` & `/meta/quad/base64`), i.e. delete crc32 version as a side effect.
-          //TODO: if only crc32 version exists, replace it with base64 version
-          //i.e: byUrl.valuesIterator.foreach(...)
-
-          val urlSet = byUrl.keys.headOption.flatMap(identity)
-          require(urlSet.isDefined, s"url must have keys defined: $byUrl, $urlSet")
-
-          val urls = urlSet.toSeq.flatMap(identity)
-          require(urls.size == 1, s"must have exactly 1 URI: ${urls.mkString("[",",","]")}, fix any of this by using")
-
-          require(urls.head.value.isInstanceOf[String], "url value not a string")
-          urls.head.value.asInstanceOf[String]
-        }
-        url
-      }
-    }(scala.concurrent.ExecutionContext.Implicits.global)
-  }
-  
-  // in case of ambiguity between meta/ns infotons with same url, this will return the one that was not auto-generated
-  def getTheNonGeneratedMetaNsInfoton(url: String, infotons: Seq[Infoton]): Infoton = {
-    require(infotons.nonEmpty)
-    val it = Iterator.iterate(cmwell.util.string.Hash.crc32base64(url))(cmwell.util.string.Hash.crc32base64)
-    it.take(infotons.length+1).foldLeft(infotons) { case (z,h) => if(z.size == 1) z else infotons.filterNot(_.name==h) }.head
-  }
 }
 

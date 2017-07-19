@@ -452,7 +452,7 @@ class DatasetGraphCmWell(val host: String,
   override def isInTransaction: Boolean = false
   override def end(): Unit = { }
   override def commit(): Unit = { }
-  private val nullFormatter = new cmwell.formats.RDFFormatter(host, hash=>Some(JenaArqExtensionsUtils.cmwellInternalUriPrefix + hash + "#" -> ""), false, false, false) {
+  private val nullFormatter = new cmwell.formats.RDFFormatter(host, hash=>Some(JenaArqExtensionsUtils.cmwellInternalUriPrefix + hash + "#" -> None), false, false, false) {
     override def format: cmwell.formats.FormatType = ???
     override def render(formattable: Formattable): String = ???
   }

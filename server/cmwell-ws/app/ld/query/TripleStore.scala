@@ -40,7 +40,7 @@ import org.openrdf.query.algebra.evaluation.{QueryOptimizer, TripleSource}
 import org.openrdf.query.algebra.helpers.AbstractQueryModelVisitor
 import org.openrdf.query.algebra._
 import org.openrdf.query.{BindingSet, Dataset, QueryEvaluationException}
-import wsutil.{RawFieldFilter, RawSingleFieldFilter, UnresolvedURIFieldKey}
+import wsutil.{FormatterManager, RawFieldFilter, RawSingleFieldFilter, UnresolvedURIFieldKey}
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext}
@@ -113,7 +113,8 @@ class TripleStore(dataFetcher: DataFetcherImpl, cmwellRDFHelper: CMWellRDFHelper
   }
 
   // todo propagate withoutMeta boolean from request to here. If withoutMeta is set to false, we need to make sure it won't fail in URIFieldKey(...)
-  private val nullFormatter = new cmwell.formats.RDFFormatter("cmwell", cmwellRDFHelper.hashToUrlAndPrefix, withoutMeta = true, filterOutBlanks = false, forceUniqueness = false) {
+  val f: String => Option[(String,Option[String])] = {(o: Option[String]) => o.map(u => u -> Option.empty[String])} compose cmwellRDFHelper.hashToUrl
+  private val nullFormatter = new cmwell.formats.RDFFormatter("cmwell", f, withoutMeta = true, filterOutBlanks = false, forceUniqueness = false) {
     override def format: cmwell.formats.FormatType = ???
     override def render(formattable: Formattable): String = ???
   }

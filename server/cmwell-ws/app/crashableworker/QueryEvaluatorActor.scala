@@ -83,8 +83,8 @@ object WorkerMain extends App with LazyLogging {
   val nRef = Grid.create(classOf[QueryEvaluatorActor], "NQueryEvaluatorActor",true,crudServiceFS,nArqCache,nJenaArqExtensionsUtils, nDataFetcher, nJarsImporter, nQueriesImporter, nSourcesImporter)
   val oRef = Grid.create(classOf[QueryEvaluatorActor], "OQueryEvaluatorActor",false,crudServiceFS,oArqCache,oJenaArqExtensionsUtils, oDataFetcher, oJarsImporter, oQueriesImporter, oSourcesImporter)
 
-  Grid.system.actorOf(Props(classOf[QueryEvaluatorActorWatcher], nRef), "NQueryEvaluatorActorWatcher")
-  Grid.system.actorOf(Props(classOf[QueryEvaluatorActorWatcher], oRef), "OQueryEvaluatorActorWatcher")
+  Grid.create(Props(classOf[QueryEvaluatorActorWatcher], nRef), "NQueryEvaluatorActorWatcher")
+  Grid.create(Props(classOf[QueryEvaluatorActorWatcher], oRef), "OQueryEvaluatorActorWatcher")
 }
 
 sealed trait QueryResponse {def content: String}

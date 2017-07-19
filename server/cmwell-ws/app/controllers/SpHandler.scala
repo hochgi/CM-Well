@@ -139,6 +139,7 @@ class SpHandlerController @Inject()(crudServiceFS: CRUDServiceFS, nbgToggler: Nb
 }
 
 object SpHandler extends LazyLogging {
+
   lazy val nActorSel = Grid.selectActor("NQueryEvaluatorActor", GridJvm(Jvms.CW))
   lazy val oActorSel = Grid.selectActor("OQueryEvaluatorActor", GridJvm(Jvms.CW))
   implicit lazy val timeout = akka.util.Timeout(100.seconds)
@@ -149,7 +150,10 @@ object SpHandler extends LazyLogging {
       if (nbg) nActorSel
       else oActorSel
     }
-    (actorSel ? paq).mapTo[QueryResponse]
+    (actorSel ? paq).mapTo[QueryResponse].andThen {
+      case Failure(e) =>
+        logger.error(s"ask to ${if(nbg)"n"else "o"}ActorSel failed",e)
+    }
   }
   def digest[T](input: T): String = cmwell.util.string.Hash.md5(input.toString)
   def deserializer(payload: Array[Byte]): QueryResponse = Plain(new String(payload, "UTF-8"))
