@@ -36,6 +36,7 @@ import com.typesafe.scalalogging.LazyLogging
 import cmwell.syntaxutils._
 import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.ws.Streams.Flows
+import cmwell.ws.util.TypeHelpers.asBoolean
 import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 import play.api.http.Writeable
 
@@ -235,7 +236,7 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
     }
   }
 
-  def getFormatter(request: Request[AnyContent], withHistory: Boolean) = {
+  def getFormatter(request: Request[AnyContent], withHistory: Boolean, nbg: Boolean) = {
 
     (extractInferredFormatWithData(request) match {
       case (fmt,b) if Set("text", "path", "tsv", "tab", "nt", "ntriples", "nq", "nquads")(fmt.toLowerCase) || fmt.toLowerCase.startsWith("json") => Success(fmt -> b)
@@ -274,7 +275,8 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
             withData = withData,
             withoutMeta = !withMeta,
             filterOutBlanks = true,
-            forceUniqueness = forceUniqueness
+            forceUniqueness = forceUniqueness,
+            nbg = nbg
           ) -> withData.isDefined
         }
       }
@@ -315,12 +317,12 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
       }
     }
 
-    val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
+    val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
 
     currStateEither match {
       case Left(err) => Future.successful(BadRequest(err))
       case Right(stateFuture) => stateFuture.flatMap {
-        case (state@BulkConsumeState(from, Some(to), path, h, d, r, threshold, ffOpt), nextTo) => getFormatter(request, h) match {
+        case (state@BulkConsumeState(from, Some(to), path, h, d, r, threshold, ffOpt), nextTo) => getFormatter(request, h, nbg) match {
           case Failure(exception) => Future.successful(BadRequest(exception.getMessage))
           case Success((formatter, withData)) => {
 
@@ -369,7 +371,7 @@ class BulkScrollHandler @Inject()(crudServiceFS: CRUDServiceFS,
   def parseQpFromRequest(qp: String, nbg: Boolean)(implicit ec: ExecutionContext): Future[Option[FieldFilter]] = {
     FieldFilterParser.parseQueryParams(qp) match {
       case Failure(err) => Future.failed(err)
-      case Success(rff) => RawFieldFilter.eval(rff,cache(nbg),cmwellRDFHelper).map(Option.apply)
+      case Success(rff) => RawFieldFilter.eval(rff,cache(nbg),cmwellRDFHelper,nbg).map(Option.apply)
     }
   }
 

@@ -199,7 +199,7 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
       //      def isTypeIncompatible(sff: SingleFieldFilter) =
       //        sff.name.startsWith("d$") && sff.value.fold(false)(FDate.isDate)
 
-      /*val evalRes =*/ Await.result(RawFieldFilter.eval(rff,typesCache,cmwellRDFHelper), 9.seconds)
+      /*val evalRes =*/ Await.result(RawFieldFilter.eval(rff,typesCache,cmwellRDFHelper,nbg), 9.seconds)
       //      filterNot(evalRes)(isTypeIncompatible)
     }
 

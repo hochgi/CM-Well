@@ -37,6 +37,7 @@ import javax.inject._
 import akka.stream.scaladsl.Flow
 import cmwell.util.FullBox
 import cmwell.web.ld.cmw.CMWellRDFHelper
+import cmwell.ws.util.TypeHelpers.asBoolean
 import ld.cmw.{NbgPassiveFieldTypesCache, ObgPassiveFieldTypesCache}
 
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -114,6 +115,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
   }
 
   def handleWebSocket(format: String) = WebSocket.accept[String,String] { request =>
+    val nbg = request.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
     val formatter = format match {
       case FormatExtractor(formatType) =>
         formatterManager.getFormatter(
@@ -122,7 +124,8 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
           uri = request.uri,
           pretty = request.queryString.keySet("pretty"),
           callback = request.queryString.get("callback").flatMap(_.headOption),
-          withData = request.getQueryString("with-data"))
+          withData = request.getQueryString("with-data"),
+          nbg = nbg)
     }
     Flow[String].mapAsync(cmwell.ws.Streams.parallelism){ msg =>
       msg.take(4) match {
@@ -166,8 +169,8 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
     else
       RequestMonitor.add("out",req.path, req.rawQueryString, req.body.asText.getOrElse(""))
 
-    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
-    val fieldsMaskFut = extractFieldsMask(req,typesCache(nbg),cmwellRDFHelper)
+    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
+    val fieldsMaskFut = extractFieldsMask(req,typesCache(nbg),cmwellRDFHelper, nbg)
 
     val formatType = format match {
       case FormatExtractor(ft) => ft
@@ -180,7 +183,8 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
       uri = req.uri,
       pretty = req.queryString.keySet("pretty"),
       callback = req.queryString.get("callback").flatMap(_.headOption),
-      withData = req.getQueryString("with-data"))
+      withData = req.getQueryString("with-data"),
+      nbg = nbg)
 
     val either: Either[SimpleResponse, Vector[String]] = req.body.asJson match {
       case Some(json) => {
@@ -213,7 +217,7 @@ class OutputHandler  @Inject()(crudServiceFS: CRUDServiceFS,
 
   def futureRetrievablePathsFromPathsAsLines(pathsVector: Vector[String], req: Request[AnyContent]) = {
 
-    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(false)
+    val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
 
     val (byUuid, byPath) = pathsVector.partition(_.startsWith("/ii/")) match {
       case (xs, ys) => (xs.map(_.drop(4)), ys) // "/ii/".length = 4

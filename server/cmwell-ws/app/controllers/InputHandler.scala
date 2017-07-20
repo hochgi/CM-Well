@@ -218,6 +218,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
 
     val now = System.currentTimeMillis()
     val p = Promise[Seq[(String,String)]]()
+    lazy val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
 
     Try {
       parseRDF(req,skipValidation).flatMap {
@@ -367,7 +368,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                         val blockingFut = arOpt.get.?(SubscribeToDone)(timeout = 5.minutes).mapTo[Seq[PathStatus]]
                         blockingFut.map { data =>
                           val payload = {
-                            val formatter = getFormatter(req, formatterManager, defaultFormat = "ntriples", withoutMeta = true)
+                            val formatter = getFormatter(req, formatterManager, defaultFormat = "ntriples", nbg = nbg, withoutMeta = true)
                             val payload = BagOfInfotons(data map pathStatusAsInfoton)
                             formatter render payload
                           }
@@ -414,6 +415,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
 
     if (req.getQueryString("dry-run").isDefined)  Future.successful(BadRequest(Json.obj("success" -> false, "error" -> "dry-run is not implemented for wrapped requests.")))
     else {
+      val nbg = req.getQueryString("nbg").flatMap(asBoolean).getOrElse(tbg.get)
       val charset = req.contentType match {
         case Some(contentType) => contentType.lastIndexOf("charset=") match {
           case i if i != -1 => contentType.substring(i + 8).trim
@@ -445,7 +447,7 @@ class InputHandler @Inject() (ingestPushback: IngestPushback,
                             case Success(Right(d)) => d
                             case Success(Left(fk)) => {
                               Try[DirectFieldKey] {
-                                val (f, l) = Await.result(FieldKey.resolve(fk, cmwellRDFHelper).map {
+                                val (f, l) = Await.result(FieldKey.resolve(fk, cmwellRDFHelper,nbg).map {
                                   case PrefixFieldKey(first, last, _) => first -> last
                                   case URIFieldKey(first, last, _) => first -> last
                                   case unknown => {

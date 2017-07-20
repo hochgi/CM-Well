@@ -108,7 +108,7 @@ class TripleStore(dataFetcher: DataFetcherImpl, cmwellRDFHelper: CMWellRDFHelper
     val value = o.map(_.asString)
     p match {
       case None => SingleFieldFilter(Must, Contains, "_all", value)
-      case Some(pred) => Await.result(RawFieldFilter.eval(RawSingleFieldFilter(Must, Equals, Left(UnresolvedURIFieldKey(pred)), value),typesCache,cmwellRDFHelper), 10.seconds)
+      case Some(pred) => Await.result(RawFieldFilter.eval(RawSingleFieldFilter(Must, Equals, Left(UnresolvedURIFieldKey(pred)), value),typesCache,cmwellRDFHelper,tbg.get), 10.seconds)
     }
   }
 
