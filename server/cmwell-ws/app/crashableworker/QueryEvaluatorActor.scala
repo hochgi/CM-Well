@@ -71,7 +71,6 @@ object WorkerMain extends App with LazyLogging {
   val oDataFetcher = new DataFetcherImpl(Config.defaultConfig,crudServiceFS,false)
   val nJenaArqExtensionsUtils = new JenaArqExtensionsUtils(nArqCache, true, crudServiceFS.nbgPassiveFieldTypesCache, cmwellRDFHelper, nDataFetcher)
   val oJenaArqExtensionsUtils = new JenaArqExtensionsUtils(oArqCache, false, crudServiceFS.obgPassiveFieldTypesCache, cmwellRDFHelper, oDataFetcher)
-  lazy val jenaArqExtensions = JenaArqExtensions.get(nJenaArqExtensionsUtils,oJenaArqExtensionsUtils)
 
   val nJarsImporter = new JarsImporter(crudServiceFS,true)
   val oJarsImporter = new JarsImporter(crudServiceFS,false)
@@ -85,6 +84,8 @@ object WorkerMain extends App with LazyLogging {
 
   Grid.create(Props(classOf[QueryEvaluatorActorWatcher], nRef), "NQueryEvaluatorActorWatcher")
   Grid.create(Props(classOf[QueryEvaluatorActorWatcher], oRef), "OQueryEvaluatorActorWatcher")
+
+  val jenaArqExtensions = JenaArqExtensions.get(nJenaArqExtensionsUtils,oJenaArqExtensionsUtils)
 }
 
 sealed trait QueryResponse {def content: String}

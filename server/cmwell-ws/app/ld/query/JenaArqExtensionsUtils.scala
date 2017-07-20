@@ -59,7 +59,7 @@ object JenaArqExtensionsUtils {
     if(!p.isURI || !p.getURI.contains(manglingSeparator)) "" -> p else {
 //      val idxOfSep = p.getURI.indexOf(JenaArqExtensionsUtils.manglingSeparator)
 //      val (subVarName, sepAndPred) = p.getURI.splitAt(idxOfSep)
-      val (subVarName, sepAndPred) = p.getURI.span('$'.!=)
+      val (subVarName, sepAndPred) = p.getURI.span(manglingSeparator.!=)
       subVarName -> NodeFactory.createURI(sepAndPred.substring(1))
     }
   }
@@ -100,7 +100,7 @@ object JenaArqExtensionsUtils {
   val cmwellInternalUriPrefix = "cmwell://meta/internal/"
   val engineInternalUriPrefix = "engine://"
 
-  val manglingSeparator = "$"
+  val manglingSeparator = '$'
 
   val fakeQuad: Quad = {
     // by having an empty subject and an empty object, this triple will never be visible to user as it won't be bind to anything. even for `select *` it's hidden
@@ -192,7 +192,7 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
 
     val unmangled@(subVarName,pred) = unmanglePredicate(p)
 
-    logger.info(s"unmangled = $unmangled")
+    logger.trace(s"unmangled = $unmangled")
 
     def toExplodedMangledFieldFilter(qp: String, value: Option[String]) = {
       val (localName, hash) = { val splt = qp.split('.'); splt(0) -> splt(1) }
@@ -213,7 +213,7 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
 
     if(pred.getURI.contains(JenaArqExtensionsUtils.engineInternalUriPrefix)) {
       val fieldFilters = JenaArqExtensionsUtils.explodeContainerPredicate(pred).map { case t@(name,value) =>
-        logger.info(s"explodeContainerPredicate result = $t")
+        logger.trace(s"explodeContainerPredicate result = $t")
         toExplodedMangledFieldFilter(name, noneIfEmpty(value))
       }
       evalAndAwait(RawMultiFieldFilter(Must, fieldFilters))
@@ -223,9 +223,9 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
         SingleFieldFilter(Must, Contains, "_all", value)
       } else {
         val qp = pred.getURI.replace(JenaArqExtensionsUtils.cmwellInternalUriPrefix,"")
-
-        logger.info(s"explodeContainerPredicate result = $t")
-        evalAndAwait(t)
+        val rff = toExplodedMangledFieldFilter(qp, value.flatMap(noneIfEmpty))
+        logger.trace(s"toExplodedMangledFieldFilter result = $rff")
+        evalAndAwait(rff)
       }
     }
   }
