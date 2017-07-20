@@ -3,6 +3,7 @@ package ld.query
 import cmwell.fts._
 import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.web.ld.query._
+import com.typesafe.scalalogging.LazyLogging
 import ld.cmw.PassiveFieldTypesCache
 import ld.query.JenaArqExtensionsUtils._
 import logic.CRUDServiceFS
@@ -56,8 +57,9 @@ object JenaArqExtensionsUtils {
 
   def unmanglePredicate(p: Node): (String,Node) = {
     if(!p.isURI || !p.getURI.contains(manglingSeparator)) "" -> p else {
-      val idxOfSep = p.getURI.indexOf(JenaArqExtensionsUtils.manglingSeparator)
-      val (subVarName, sepAndPred) = p.getURI.splitAt(idxOfSep)
+//      val idxOfSep = p.getURI.indexOf(JenaArqExtensionsUtils.manglingSeparator)
+//      val (subVarName, sepAndPred) = p.getURI.splitAt(idxOfSep)
+      val (subVarName, sepAndPred) = p.getURI.span('$'.!=)
       subVarName -> NodeFactory.createURI(sepAndPred.substring(1))
     }
   }
@@ -89,9 +91,11 @@ object JenaArqExtensionsUtils {
       None // making qp just `field:`
   }
 
-  def explodeContainerPredicate(pred: Node): Seq[(String,String)] = {
-    pred.getURI.replace(engineInternalUriPrefix,"").split('|').map(cmwell.util.string.spanNoSepBy(_, ':'))
-  }
+  def explodeContainerPredicate(pred: Node): Seq[(String,String)] = pred
+    .getURI
+    .replace(engineInternalUriPrefix,"")
+    .split('|')
+    .map(cmwell.util.string.splitAtNoSep(_, ':'))
 
   val cmwellInternalUriPrefix = "cmwell://meta/internal/"
   val engineInternalUriPrefix = "engine://"
@@ -108,7 +112,7 @@ object JenaArqExtensionsUtils {
   def queryToSseString(query: Query): String = Algebra.compile(query).toString(query.getPrefixMapping)
 }
 
-class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper, dataFetcher: DataFetcher) {
+class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: PassiveFieldTypesCache, cmwellRDFHelper: CMWellRDFHelper, dataFetcher: DataFetcher) extends LazyLogging {
 
   def predicateToInnerRepr(predicate: Node): Node = {
     if(!predicate.isURI) predicate else {
@@ -186,7 +190,9 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
 
   def predicateToFieldFilter(p: Node, obj: Node = emptyLtrl)(implicit ec: scala.concurrent.ExecutionContext): FieldFilter = {
 
-    val pred = unmanglePredicate(p)._2
+    val unmangled@(subVarName,pred) = unmanglePredicate(p)
+
+    logger.info(s"unmangled = $unmangled")
 
     def toExplodedMangledFieldFilter(qp: String, value: Option[String]) = {
       val (localName, hash) = { val splt = qp.split('.'); splt(0) -> splt(1) }
@@ -206,7 +212,8 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
     def noneIfEmpty(s: String): Option[String] = if(s.isEmpty) None else Some(s)
 
     if(pred.getURI.contains(JenaArqExtensionsUtils.engineInternalUriPrefix)) {
-      val fieldFilters = JenaArqExtensionsUtils.explodeContainerPredicate(pred).map { case (name,value) =>
+      val fieldFilters = JenaArqExtensionsUtils.explodeContainerPredicate(pred).map { case t@(name,value) =>
+        logger.info(s"explodeContainerPredicate result = $t")
         toExplodedMangledFieldFilter(name, noneIfEmpty(value))
       }
       evalAndAwait(RawMultiFieldFilter(Must, fieldFilters))
@@ -216,7 +223,9 @@ class JenaArqExtensionsUtils(arqCache: ArqCache, nbg: Boolean, typesCache: Passi
         SingleFieldFilter(Must, Contains, "_all", value)
       } else {
         val qp = pred.getURI.replace(JenaArqExtensionsUtils.cmwellInternalUriPrefix,"")
-        evalAndAwait(toExplodedMangledFieldFilter(qp, value.flatMap(noneIfEmpty)))
+
+        logger.info(s"explodeContainerPredicate result = $t")
+        evalAndAwait(t)
       }
     }
   }
