@@ -28,7 +28,7 @@ initialize := {
   if (Version(sys.props("java.specification.version")) < Version("1.8"))
     sys.error("Java 8 or higher is required for CM-Well!")
 }
-//resolvers in Global += "CM-WELL public" at "http://builder.clearforest.com:8081/nexus/content/groups/public"
+resolvers in Global += "bintray akka" at "https://dl.bintray.com/akka/maven/"
 updateOptions in Global := updateOptions.in(Global).value.withCachedResolution(true).withCircularDependencyLevel(CircularDependencyLevel.Error)
 //updateOptions := updateOptions.value.withCachedResolution(true)
 //updateOptions := updateOptions.value.withCircularDependencyLevel(CircularDependencyLevel.Error)
@@ -60,7 +60,7 @@ dependenciesManager in Global := {
   case ("com.typesafe.scala-logging","scala-logging")              => "com.typesafe.scala-logging" %% "scala-logging" % "3.5.0"
   case ("com.typesafe.akka", "akka-stream-kafka")                  => "com.typesafe.akka" %% "akka-stream-kafka" % "0.18"
   case ("com.typesafe.akka", "akka-stream-contrib")                => "com.typesafe.akka" %% "akka-stream-contrib" % "0.8"
-  case ("com.typesafe.akka", "akka-http")                          => "com.typesafe.akka" %% "akka-http" % "10.0.11"
+  case ("com.typesafe.akka", "akka-http")                          => "com.typesafe.akka" %% "akka-http" % "10.1.0-RC1+64-3a7a288f" //10.0.11"
   case ("com.typesafe.akka",art)                                   => "com.typesafe.akka" %% art % "2.5.9"
   case ("com.typesafe.play", "twirl-api")                          => "com.typesafe.play" %% "twirl-api" % "1.3.13"
   case ("com.typesafe.play", "play-json")                          => "com.typesafe.play" %% "play-json" % "2.6.8"
