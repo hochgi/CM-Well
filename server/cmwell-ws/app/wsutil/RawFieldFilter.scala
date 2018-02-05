@@ -219,17 +219,17 @@ object FieldKey extends LazyLogging with PrefixRequirement  {
   }
 
   def resolvePrefix(cmwellRDFHelper: CMWellRDFHelper, first: String, requestedPrefix: String)(implicit ec: ExecutionContext): Future[(String,String)] = {
-    Try(cmwellRDFHelper.getUrlAndLastForPrefixAsync(requestedPrefix)).recover {
+    Try(cmwellRDFHelper.getIdentifierForPrefixAsync(requestedPrefix)).fold({
       case t: Throwable =>
         Future.failed[(String,String)](new Exception("resolvePrefix failed",t))
-    }.get.transform {
-      case scala.util.Success((_, last)) => Success(first -> last)
+    }, _.transform {
+      case scala.util.Success(identifier) => Success(first -> identifier)
       case scala.util.Failure(e: UnretrievableIdentifierException) => Failure(e)
       case scala.util.Failure(e: IllegalArgumentException) => Failure(new UnretrievableIdentifierException(e.getMessage, e))
       case scala.util.Failure(e) => {
         logger.error(s"couldn't find the prefix: $requestedPrefix", e)
         Failure(new UnretrievableIdentifierException(s"couldn't find the prefix: $requestedPrefix", e))
       }
-    }
+    })
   }
 }

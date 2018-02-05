@@ -333,61 +333,37 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
   def urlToHashAsync(url: String)(implicit ec: ExecutionContext): Future[String] =
     identifierToUrlAndPrefixCache.getByV1(url).fold(Future.failed[String](new NoSuchElementException(s"no ns identifier found for url [$url]")))(Future.successful)
 
-  def getUrlAndLastForPrefix(prefix: String)(implicit ec: ExecutionContext, awaitTimeout: FiniteDuration = Settings.esTimeout): (String,String) = {
-    Await.result(getUrlAndLastForPrefixAsync(prefix),awaitTimeout)
-  }
+//  def getUrlAndLastForPrefix(prefix: String)(implicit ec: ExecutionContext, awaitTimeout: FiniteDuration = Settings.esTimeout): (String,String) = {
+//    Await.result(getUrlAndLastForPrefixAsync(prefix),awaitTimeout)
+//  }
 
-  def getUrlAndLastForPrefixAsync(prefix: String)(implicit ec: ExecutionContext): Future[(String,String)] = {
-    val f = getUrlForPrefixAsyncActual(prefix)
-    f.onComplete{
-      case Success((url,last,infoton)) => {
-        hashToUrlPermanentCache.put(last,url)
-        urlToHashPermanentCache.put(url,last)
-        hashToMetaNsInfotonCache.put(last, infoton)
+//  def getIdentifierForPrefix(prefix: String) = identifierToUrlAndPrefixCache.getByV2(prefix)
+
+  def getIdentifierForPrefixAsync(prefix: String)(implicit ec: ExecutionContext): Future[String] = {
+    identifierToUrlAndPrefixCache.getByV2(prefix).fold{
+      getUrlForPrefixAsyncActual(prefix).andThen {
+        case Success(identifier) =>
+          identifierToUrlAndPrefixCache.getOrElseUpdate(identifier)
       }
-      case Failure(pre: PrefixResolvingError) => logger.debug(s"getHashForPrefixAsync for $prefix failed",pre)
-      case Failure(err) => logger.error(s"getHashForPrefixAsync for $prefix failed",err)
-    }
-    f.map(t => t._1 -> t._2)
+    }(Future.successful)
   }
 
-  def hashToInfoton(hash: String): Option[Infoton] = Try(hashToMetaNsInfotonCache.getBlocking(hash)).toOption
+//  def hashToInfoton(hash: String): Option[Infoton] = Try(hashToMetaNsInfotonCache.getBlocking(hash)).toOption
 
-  def hashToInfotonAsync(hash: String)(ec: ExecutionContext): Future[Infoton] = hashToMetaNsInfotonCache.getAsync(hash)(ec)
+  def hashToInfotonAsync(hash: String)(ec: ExecutionContext): Future[Infoton] =
+    crudServiceFS.getInfotonByPathAsync(s"/meta/ns/$hash").transform {
+      case Failure(err) => Failure(new IllegalStateException(s"could not load /meta/ns/$hash",err))
+      case Success(EmptyBox) => Failure(new NoSuchElementException(s"could not load /meta/ns/$hash"))
+      case Success(BoxedFailure(err)) => Failure(new IllegalStateException(s"could not load /meta/ns/$hash from IRW",err))
+      case success => success.map(_.get)
+    }(ec)
 
-  def urlToInfoton(url: String): Option[Infoton] = Try(urlToMetaNsInfotonCache.getBlocking(url)).toOption
+//  def urlToInfoton(url: String): Option[Infoton] = Try(urlToMetaNsInfotonCache.getBlocking(url)).toOption
 
   def hashToUrlAndPrefix(hash: String): Option[(String,String)] =
-    hashToInfoton(hash).flatMap {
-      infoton => {
-        infoton.fields.flatMap { fieldsMap =>
-          fieldsMap.get("url").map { valueSet =>
-            require(valueSet.size == 1, s"/meta/ns infoton must contain a single url value: $infoton")
-            val uri = valueSet.head.value match {
-              case url: String => {
-                hashToUrlPermanentCache.put(hash,url)
-                urlToHashPermanentCache.put(url,hash)
-                url
-              }
-              case any => throw new RuntimeException(s"/meta/ns infoton's url field must contain a string value (got: ${any.getClass} for $infoton)")
-            }
-            val prefix = fieldsMap.get("prefix").map{ prefixSet =>
-              require(valueSet.size == 1, s"/meta/ns infoton must contain a single prefix value: $infoton")
-              prefixSet.head.value match {
-                case prefix: String => prefix
-                case any => throw new RuntimeException(s"/meta/ns infoton's url field must contain a string value (got: ${any.getClass} for $infoton)")
-              }
-            }
-            uri -> prefix.getOrElse{
-              logger.debug(s"retrieving prefix in the old method. we need to replace the infoton: $infoton")
-              infoton.path.drop("/meta/ns/".length)
-            }
-          }
-        }
-      }
-    }
+    identifierToUrlAndPrefixCache.get(hash)
 
-  def prefixToHash(prefix: String): Option[String] = Try(prefixToHashCache.getBlocking(prefix)).toOption
+//  def prefixToHash(prefix: String): Option[String] = Try(prefixToHashCache.getBlocking(prefix)).toOption
 
   /**
    * @param url as plain string
@@ -395,38 +371,19 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
    *         paired with a boolean indicating if this is new or not/
    */
   def nsUrlToHash(url: String): (String,PrefixState) = {
-    def inner(hash: String): (String,PrefixState) = hashToInfoton(hash) match {
-      case None => hash -> Create
-      case Some(i) => {
-        require(i.fields.isDefined, s"must have non empty fields ($i)")
-        require(i.fields.get.contains("url"), s"must have url defined ($i)")
-        val valSet = i.fields.get("url")
-        require(valSet.size == 1, s"must have only 1 url ($i)")
-        val actualHash = i.path.drop("/meta/ns/".length)
-        valSet.head match {
-          case fv if fv.value.isInstanceOf[String] && fv.value.asInstanceOf[String] == url => actualHash -> Exists
-          case fv if fv.value.isInstanceOf[String] && fv.value.asInstanceOf[String] != url => inner(crc32base64(hash))
-          case fv => throw new RuntimeException(s"got weird value: $fv")
-        }
-      }
-    }
+
+    def inner(hash: String): Future[(String,PrefixState)] = hashToUrlAsync(hash)(globalExecutionContext).transformWith {
+      case Success(`url`) => Future.successful(hash -> Exists)
+      case Failure(_: NoSuchElementException) => Future.successful(hash -> Create)
+      case Failure(err) => Future.failed(new Exception(s"nsUrlToHash.inner failed for url [$url] and hash [$hash]",err))
+      case Success(_ /* not same url */) => inner(crc32base64(hash))
+    }(globalExecutionContext)
 
 
     urlToHash(url) match {
       case Some(nsIdentifier) => nsIdentifier -> Exists
-      case None => inner(crc32base64(url))
+      case None => Await.result(inner(crc32base64(url)),Duration.Inf) //FIXME: Await...
     }
-
-//    //TODO: temp code (the `.map(...) expression`), once all meta is stabilized with prefixes, use the permanent cache method: urlToHash
-//    urlToInfoton(url).map(
-//      i => {//if prefix field is not defined (for old style /meta/ns infotons) return true, which means the field will be added
-//        val prefixState = i.fields.flatMap(_.get("prefix")) match {
-//          case None => Update
-//          case _ => Exists
-//        }
-//        i.path.drop("/meta/ns/".length) -> prefixState
-//      }
-//    ).getOrElse(inner(crc32base64(url)))
   }
 
   def getAliasForQuadUrl(graphName: String): Option[String] = Try(graphToAliasCache.get(graphName)).toOption
@@ -490,7 +447,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
   }
 
   @inline def hashIterator(url: String) =
-    Iterator.iterate(cmwell.util.string.Hash.crc32baseidentifierToUrlAndPrefixCache64(url))(cmwell.util.string.Hash.crc32base64)
+    Iterator.iterate(cmwell.util.string.Hash.crc32base64(url))(cmwell.util.string.Hash.crc32base64)
 
   val seqInfotonToSetString = scala.collection.breakOut[Seq[Infoton],String,Set[String]]
 
@@ -567,17 +524,17 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
 
   // private[this] section:
 
-  private[this] def getUrlForPrefixAsyncActual(prefix: String)(implicit ec: ExecutionContext): Future[(String,String,Infoton)] = {
+  private[this] def getUrlForPrefixAsyncActual(prefix: String)(implicit ec: ExecutionContext)/*: Future[(String,String,Infoton)]*/ = {
 
     @inline def prefixRequirement(requirement: Boolean, message: => String): Unit = {
       if (!requirement)
         throw new UnretrievableIdentifierException(message)
     }
 
-    def ensureRequirementsAndOutputPair(infotons: Seq[Infoton]): (String,String,Infoton) = {
+    def ensureRequirementsAndOutputPair(infotons: Seq[Infoton])/*: (String,String,Infoton)*/ = {
       prefixRequirement(infotons.nonEmpty, s"the prefix $prefix is not associated to any namespace")
 
-      val triple = {
+      /*val triple = {*/
         val byUrl = infotons.groupBy(_.fields.flatMap(_.get("url")))
         prefixRequirement(byUrl.forall(_._2.size == 1), s"group by url must be unique: $byUrl")
 
@@ -607,12 +564,12 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
         prefixRequirement(urls.size == 1, s"""must have exactly 1 URI: ${urls.mkString("[", ",", "]")}, fix any of this by using the meta operation: (POST to _in `<> <cmwell://meta/ns#NEW_PREFIX> "NS_URI" .`)""")
 
         prefixRequirement(urls.head.value.isInstanceOf[String], "url value not a string")
-        val url = urls.head.value.asInstanceOf[String]
+//        val url = urls.head.value.asInstanceOf[String]
         val i = iSeq.head
-        val last = i.path.drop("/meta/ns/".length)
-        (url, last, i)
-      }
-      triple
+        /*val last = */ i.path.drop("/meta/ns/".length)
+//        (url, last, i)
+//      }
+//      triple
     }
 
     crudServiceFS.search(
