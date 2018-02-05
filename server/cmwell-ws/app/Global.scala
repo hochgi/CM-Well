@@ -83,7 +83,7 @@ class Global @Inject()(crudServiceFS: CRUDServiceFS, cmwellRDFHelper: CMWellRDFH
 //        sys.exit(1)
 //    }
 //
-//    RequestMonitor.init
+    RequestMonitor.init
 //
 //    Try(cmwell.util.concurrent.retry(3) {
 //        crudServiceFS.search(

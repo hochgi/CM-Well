@@ -96,7 +96,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
   }{ notFoundIdentifier =>
     crudServiceFS.getInfotonByPathAsync("/meta/ns/" + notFoundIdentifier).transform {
       case Failure(err) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton",err))
-      case Success(EmptyBox) =>  Failure(new IllegalStateException(s"infoton not exists: /meta/ns/$notFoundIdentifier"))
+      case Success(EmptyBox) =>  Failure(new NoSuchElementException(s"infoton not exists: /meta/ns/$notFoundIdentifier"))
       case Success(BoxedFailure(err)) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton from irw",err))
       case Success(FullBox(infoton)) => validateInfoton(infoton)
     }(injectedExecutionContext)
@@ -325,6 +325,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
   def hashToUrlAsync(hash: String)(implicit ec: ExecutionContext): Future[String] = identifierToUrlAndPrefixCache.getOrElseUpdate(hash)(ec).transform {
     case Success(Some((url,prefix))) => Success(url)
     case Success(None) => Failure(new NoSuchElementException(s"ns identifier not found [$hash]"))
+    case Failure(err: NoSuchElementException) => Failure(new NoSuchElementException(s"ns identifier not found [$hash]").initCause(err))
     case Failure(err) => Failure(new IllegalStateException(s"failed to get ns infoton for identifier [$hash]",err))
   }(ec)
 
