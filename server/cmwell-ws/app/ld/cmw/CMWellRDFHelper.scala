@@ -31,6 +31,9 @@ import cmwell.ws.Settings
 import com.google.common.cache.{Cache, CacheBuilder, CacheLoader, LoadingCache}
 import com.typesafe.scalalogging.LazyLogging
 import javax.inject._
+
+import cmwell.util.{BoxedFailure, EmptyBox, FullBox}
+import cmwell.util.cache.TimeBasedAccumulatedCache
 import ld.cmw.PassiveFieldTypesCache
 import logic.CRUDServiceFS
 import wsutil.DirectFieldKey
@@ -67,127 +70,183 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
 
   import CMWellRDFHelper._
 
+  val identifierToUrlAndPrefixCache = TimeBasedAccumulatedCache[Seq[Infoton],String,String,String](Map.empty,0L,2.minutes){ indexTime =>
+    crudServiceFS.thinSearch(
+          pathFilter = Some(PathFilter("/meta/ns", descendants = false)),
+          fieldFilters = Some(FieldFilter(Must, GreaterThan, "system.indexTime", indexTime.toString)),
+          datesFilter = None,
+          paginationParams = PaginationParams(0, Settings.initialMetaNsLoadingAmount),
+          withHistory = false,
+          withDeleted = true,
+          fieldSortParams = FieldSortParams(List("system.indexTime" -> Asc))).flatMap { str =>
+      crudServiceFS.getInfotonsByUuidAsync(str.thinResults.map(_.uuid))
+    }(injectedExecutionContext)
+  }{ bagOfInfotons =>
+    bagOfInfotons.foldLeft(0L -> Map.empty[String,(String,String)]) {
+      case (orig@(iTime, acc), infoton) => {
+        val timestamp = math.max(iTime, infoton.indexTime.getOrElse {
+          logger.warn(s"encountered infoton [${infoton.path}/${infoton.uuid}] without index time")
+          0L
+        })
 
-  private[this] val hashToUrlPermanentCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .build {
-      new CacheLoader[String, String] {
-        override def load(hash: String): String = {
-          val vSet = hashToInfoton(hash).get.fields.get("url")
-          require(vSet.size == 1, "only 1 url value is allowed!")
-          vSet.head match {
-            case FReference(url,_) => url
-            case FString(url,_,_) => {
-              logger.warn(s"got $url for 'url' field for hash=$hash, but it is `FString` instead of `FReference`")
-              url
-            }
-            case weirdFValue => {
-              logger.error(s"got weird value: $weirdFValue")
-              weirdFValue.value.toString
-            }
-          }
-        }
+        validateInfoton(infoton).fold({ err => logger.error("", err); orig },
+          { urlPrefix => timestamp -> acc.updated(infoton.path.drop("/meta/ns/".length), urlPrefix) })
       }
     }
+  }{ notFoundIdentifier =>
+    crudServiceFS.getInfotonByPathAsync("/meta/ns/" + notFoundIdentifier).transform {
+      case Failure(err) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton",err))
+      case Success(EmptyBox) =>  Failure(new IllegalStateException(s"infoton not exists: /meta/ns/$notFoundIdentifier"))
+      case Success(BoxedFailure(err)) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton from irw",err))
+      case Success(FullBox(infoton)) => validateInfoton(infoton)
+    }(injectedExecutionContext)
+  }
 
-  private[this] val urlToHashPermanentCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .build {
-      new CacheLoader[String, String] {
-        override def load(url: String): String = {
-          urlToInfoton(url).get.path.drop("/meta/ns/".length)
-        }
+  private def validateInfoton(infoton: Infoton): Try[(String,String)] = {
+    if (!infoton.path.matches("/meta/ns/[^/]+")) Failure(new IllegalStateException(s"weird looking path for /meta/ns infoton [${infoton.path}/${infoton.uuid}]"))
+    else if (infoton.fields.isEmpty) Failure(new IllegalStateException(s"no fields found for /meta/ns infoton [${infoton.path}/${infoton.uuid}]"))
+    else {
+      val f = infoton.fields.get
+      metaNsFieldsValidator(infoton, f, "prefix").flatMap { p =>
+        metaNsFieldsValidator(infoton, f, "url").map(_ -> p)
       }
     }
+  }
 
-  private[this] val hashToMetaNsInfotonCache: LoadingCache[String,Infoton] = CacheBuilder
-    .newBuilder()
-    .expireAfterWrite(2, TimeUnit.MINUTES)
-    .build{
-      new CacheLoader[String,Infoton] {
-        override def load(hash: String): Infoton = {
-          val f = getMetaNsInfotonForHash(hash)(injectedExecutionContext)
-          f.onComplete {
-            case Success(Some(infoton)) => {
-              infoton.fields.foreach { fields =>
-                fields.get("prefix").foreach {
-                  vSet => {
-                    require(vSet.size == 1, s"must have only 1 prefix ($infoton)")
-                    vSet.head match {
-                      case fv if fv.value.isInstanceOf[String] => prefixToHashCache.put(fv.value.asInstanceOf[String], hash)
-                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
-                    }
-                  }
-                }
-                fields.get("url").foreach {
-                  vSet => {
-                    require(vSet.size == 1, s"must have only 1 url ($infoton)")
-                    vSet.head match {
-                      case fv if fv.value.isInstanceOf[String] => urlToMetaNsInfotonCache.put(fv.value.asInstanceOf[String], infoton)
-                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
-                    }
-                  }
-                }
-              }
-            }
-            case Success(None) => logger.trace(s"load for /meta/ns/$hash is empty")
-            case Failure(e) => logger.error(s"load for $hash failed",e)
-          }(scala.concurrent.ExecutionContext.Implicits.global)
-          Await.result(f, 10.seconds).get
-        }
+  private def metaNsFieldsValidator(i: Infoton, fields: Map[String, Set[FieldValue]], field: String): Try[String] = {
+    fields.get("prefix").fold[Try[String]](Failure(new IllegalStateException(s"$field field not found for /meta/ns infoton [${i.path}/${i.uuid}]"))) { values =>
+      if (values.isEmpty) Failure(new IllegalStateException(s"empty value set for $field field in /meta/ns infoton [${i.path}/${i.uuid}]"))
+      else if(values.size > 1) Failure(new IllegalStateException(s"multiple values ${values.mkString("[,",",","]")} for $field field in /meta/ns infoton [${i.path}/${i.uuid}]"))
+      else values.head.value match {
+        case s: String => Success(s)
+        case x => Failure(new IllegalStateException(s"found a weird /meta/ns infoton without a string value [${x.getClass.getSimpleName}] for prefix: [$i]"))
       }
     }
+  }
 
-  private[this] val urlToMetaNsInfotonCache: LoadingCache[String,Infoton] = CacheBuilder
-    .newBuilder()
-    .expireAfterWrite(2, TimeUnit.MINUTES)
-    .build {
-      new CacheLoader[String,Infoton] {
-        override def load(url: String): Infoton = {
-          val f = getMetaNsInfotonForUrl(url)(injectedExecutionContext)
-          f.onComplete{
-            case Success(Some(infoton)) => {
-              val hash = infoton.path.drop("/meta/ns/".length)
-              infoton.fields.foreach { fields =>
-                fields.get("prefix").foreach {
-                  vSet => {
-                    require(vSet.size == 1, s"must have only 1 prefix ($infoton)")
-                    vSet.head match {
-                      case fv if fv.value.isInstanceOf[String] => prefixToHashCache.put(fv.value.asInstanceOf[String], hash)
-                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
-                    }
-                  }
-                }
-                fields.get("url").foreach {
-                  vSet => {
-                    require(vSet.size == 1, s"must have only 1 url ($infoton)")
-                    vSet.head match {
-                      case fv if fv.value.isInstanceOf[String] => hashToMetaNsInfotonCache.put(hash, infoton)
-                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
-                    }
-                  }
-                }
-              }
-            }
-            case Success(None) => logger.trace(s"load for url = $url is empty")
-            case Failure(e) => logger.error(s"load for url = $url failed",e)
-          }(scala.concurrent.ExecutionContext.Implicits.global)
-          Await.result(f, 10.seconds).get
-        }
-      }
-    }
 
-  private[this] val prefixToHashCache: LoadingCache[String,String] = CacheBuilder
-    .newBuilder()
-    .expireAfterWrite(2, TimeUnit.MINUTES)
-    .build{
-      new CacheLoader[String,String] {
-        override def load(prefix: String): String = {
-          val f = getUrlAndLastForPrefixAsync(prefix)(injectedExecutionContext)
-          Await.result(f, 10.seconds)._1
-        }
-      }
-    }
+  //////////////////// OLD /////////////////////////////
+
+//  private[this] val hashToUrlPermanentCache: LoadingCache[String,String] = CacheBuilder
+//    .newBuilder()
+//    .build {
+//      new CacheLoader[String, String] {
+//        override def load(hash: String): String = {
+//          val vSet = hashToInfoton(hash).get.fields.get("url")
+//          require(vSet.size == 1, "only 1 url value is allowed!")
+//          vSet.head match {
+//            case FReference(url,_) => url
+//            case FString(url,_,_) => {
+//              logger.warn(s"got $url for 'url' field for hash=$hash, but it is `FString` instead of `FReference`")
+//              url
+//            }
+//            case weirdFValue => {
+//              logger.error(s"got weird value: $weirdFValue")
+//              weirdFValue.value.toString
+//            }
+//          }
+//        }
+//      }
+//    }
+
+//  private[this] val urlToHashPermanentCache: LoadingCache[String,String] = CacheBuilder
+//    .newBuilder()
+//    .build {
+//      new CacheLoader[String, String] {
+//        override def load(url: String): String = {
+//          urlToInfoton(url).get.path.drop("/meta/ns/".length)
+//        }
+//      }
+//    }
+
+//  private[this] val hashToMetaNsInfotonCache: LoadingCache[String,Infoton] = CacheBuilder
+//    .newBuilder()
+//    .expireAfterWrite(2, TimeUnit.MINUTES)
+//    .build{
+//      new CacheLoader[String,Infoton] {
+//        override def load(hash: String): Infoton = {
+//          val f = getMetaNsInfotonForHash(hash)(injectedExecutionContext)
+//          f.onComplete {
+//            case Success(Some(infoton)) => {
+//              infoton.fields.foreach { fields =>
+//                fields.get("prefix").foreach {
+//                  vSet => {
+//                    require(vSet.size == 1, s"must have only 1 prefix ($infoton)")
+//                    vSet.head match {
+//                      case fv if fv.value.isInstanceOf[String] => prefixToHashCache.put(fv.value.asInstanceOf[String], hash)
+//                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
+//                    }
+//                  }
+//                }
+//                fields.get("url").foreach {
+//                  vSet => {
+//                    require(vSet.size == 1, s"must have only 1 url ($infoton)")
+//                    vSet.head match {
+//                      case fv if fv.value.isInstanceOf[String] => urlToMetaNsInfotonCache.put(fv.value.asInstanceOf[String], infoton)
+//                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
+//                    }
+//                  }
+//                }
+//              }
+//            }
+//            case Success(None) => logger.trace(s"load for /meta/ns/$hash is empty")
+//            case Failure(e) => logger.error(s"load for $hash failed",e)
+//          }(scala.concurrent.ExecutionContext.Implicits.global)
+//          Await.result(f, 10.seconds).get
+//        }
+//      }
+//    }
+
+//  private[this] val urlToMetaNsInfotonCache: LoadingCache[String,Infoton] = CacheBuilder
+//    .newBuilder()
+//    .expireAfterWrite(2, TimeUnit.MINUTES)
+//    .build {
+//      new CacheLoader[String,Infoton] {
+//        override def load(url: String): Infoton = {
+//          val f = getMetaNsInfotonForUrl(url)(injectedExecutionContext)
+//          f.onComplete{
+//            case Success(Some(infoton)) => {
+//              val hash = infoton.path.drop("/meta/ns/".length)
+//              infoton.fields.foreach { fields =>
+//                fields.get("prefix").foreach {
+//                  vSet => {
+//                    require(vSet.size == 1, s"must have only 1 prefix ($infoton)")
+//                    vSet.head match {
+//                      case fv if fv.value.isInstanceOf[String] => prefixToHashCache.put(fv.value.asInstanceOf[String], hash)
+//                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
+//                    }
+//                  }
+//                }
+//                fields.get("url").foreach {
+//                  vSet => {
+//                    require(vSet.size == 1, s"must have only 1 url ($infoton)")
+//                    vSet.head match {
+//                      case fv if fv.value.isInstanceOf[String] => hashToMetaNsInfotonCache.put(hash, infoton)
+//                      case fv => logger.error(s"found a weird /meta/ns infoton without a string value: $infoton")
+//                    }
+//                  }
+//                }
+//              }
+//            }
+//            case Success(None) => logger.trace(s"load for url = $url is empty")
+//            case Failure(e) => logger.error(s"load for url = $url failed",e)
+//          }(scala.concurrent.ExecutionContext.Implicits.global)
+//          Await.result(f, 10.seconds).get
+//        }
+//      }
+//    }
+
+//  private[this] val prefixToHashCache: LoadingCache[String,String] = CacheBuilder
+//    .newBuilder()
+//    .expireAfterWrite(2, TimeUnit.MINUTES)
+//    .build{
+//      new CacheLoader[String,String] {
+//        override def load(prefix: String): String = {
+//          val f = getUrlAndLastForPrefixAsync(prefix)(injectedExecutionContext)
+//          Await.result(f, 10.seconds)._1
+//        }
+//      }
+//    }
 
   private[this] val graphToAliasCache: LoadingCache[String,String] = CacheBuilder
     .newBuilder()
@@ -224,50 +283,55 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
       }
     }
 
-  def loadNsCachesWith(infotons: Seq[Infoton]): Unit = infotons.foreach{ i =>
+//  def loadNsCachesWith(infotons: Seq[Infoton]): Unit = infotons.foreach { i =>
+//
+//    def fieldsToOpt(fieldName: String)(fMap: Map[String,Set[FieldValue]]): Option[String] = {
+//      val uValSetOpt = fMap.get(fieldName)
+//      uValSetOpt.flatMap{ vSet =>
+//        if(vSet.size == 1) vSet.head match {
+//          case FString(value,_,_) => Some(value)
+//          case FReference(value,_) => Some(value)
+//          case weirdValue => {
+//            logger.error(s"weird value [$weirdValue] from meta ns for field [$fieldName]")
+//            None
+//          }
+//        }
+//        else {
+//          logger.error(s"ns $fieldName loading failed because amount != 1: $vSet")
+//          None
+//        }
+//      }
+//    }
+//
+//    val urlOpt = i.fields.flatMap(fieldsToOpt("url"))
+//    val prefixOpt = i.fields.flatMap(fieldsToOpt("prefix"))
+//    val nsIdentifier = i.path.drop("/meta/ns/".length)
+//
+//    hashToMetaNsInfotonCache.put(nsIdentifier,i)
+//
+//    urlOpt.foreach{url =>
+//      hashToUrlPermanentCache.put(nsIdentifier,url)
+//      urlToMetaNsInfotonCache.put(url,i)
+//      urlToHashPermanentCache.put(url,nsIdentifier)
+//    }
+//
+//    prefixOpt.foreach{prefix =>
+//      prefixToHashCache.put(prefix,nsIdentifier)
+//    }
+//  }
 
-    def fieldsToOpt(fieldName: String)(fMap: Map[String,Set[FieldValue]]): Option[String] = {
-      val uValSetOpt = fMap.get(fieldName)
-      uValSetOpt.flatMap{ vSet =>
-        if(vSet.size == 1) vSet.head match {
-          case FString(value,_,_) => Some(value)
-          case FReference(value,_) => Some(value)
-          case weirdValue => {
-            logger.error(s"weird value [$weirdValue] from meta ns for field [$fieldName]")
-            None
-          }
-        }
-        else {
-          logger.error(s"ns $fieldName loading failed because amount != 1: $vSet")
-          None
-        }
-      }
-    }
+  def hashToUrl(hash: String): Option[String] = identifierToUrlAndPrefixCache.get(hash).map { case (url,prefix) => url } //Try(hashToUrlPermanentCache.getBlocking(hash)).toOption
 
-    val urlOpt = i.fields.flatMap(fieldsToOpt("url"))
-    val prefixOpt = i.fields.flatMap(fieldsToOpt("prefix"))
-    val nsIdentifier = i.path.drop("/meta/ns/".length)
+  def hashToUrlAsync(hash: String)(implicit ec: ExecutionContext): Future[String] = identifierToUrlAndPrefixCache.getOrElseUpdate(hash)(ec).transform {
+    case Success(Some((url,prefix))) => Success(url)
+    case Success(None) => Failure(new NoSuchElementException(s"ns identifier not found [$hash]"))
+    case Failure(err) => Failure(new IllegalStateException(s"failed to get ns infoton for identifier [$hash]",err))
+  }(ec)
 
-    hashToMetaNsInfotonCache.put(nsIdentifier,i)
+  def urlToHash(url: String): Option[String] = identifierToUrlAndPrefixCache.getByV1(url)
 
-    urlOpt.foreach{url =>
-      hashToUrlPermanentCache.put(nsIdentifier,url)
-      urlToMetaNsInfotonCache.put(url,i)
-      urlToHashPermanentCache.put(url,nsIdentifier)
-    }
-
-    prefixOpt.foreach{prefix =>
-      prefixToHashCache.put(prefix,nsIdentifier)
-    }
-  }
-
-  def hashToUrl(hash: String): Option[String] = Try(hashToUrlPermanentCache.getBlocking(hash)).toOption
-
-  def hashToUrlAsync(hash: String)(implicit ec: ExecutionContext): Future[String] = hashToUrlPermanentCache.getAsync(hash)(ec)
-
-  def urlToHash(url: String): Option[String] = Try(urlToHashPermanentCache.getBlocking(url)).toOption
-
-  def urlToHashAsync(url: String)(implicit ec: ExecutionContext): Future[String] = urlToHashPermanentCache.getAsync(url)(ec)
+  def urlToHashAsync(url: String)(implicit ec: ExecutionContext): Future[String] =
+    identifierToUrlAndPrefixCache.getByV1(url).fold(Future.failed[String](new NoSuchElementException(s"no ns identifier found for url [$url]")))(Future.successful)
 
   def getUrlAndLastForPrefix(prefix: String)(implicit ec: ExecutionContext, awaitTimeout: FiniteDuration = Settings.esTimeout): (String,String) = {
     Await.result(getUrlAndLastForPrefixAsync(prefix),awaitTimeout)
@@ -426,7 +490,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
   }
 
   @inline def hashIterator(url: String) =
-    Iterator.iterate(cmwell.util.string.Hash.crc32base64(url))(cmwell.util.string.Hash.crc32base64)
+    Iterator.iterate(cmwell.util.string.Hash.crc32baseidentifierToUrlAndPrefixCache64(url))(cmwell.util.string.Hash.crc32base64)
 
   val seqInfotonToSetString = scala.collection.breakOut[Seq[Infoton],String,Set[String]]
 

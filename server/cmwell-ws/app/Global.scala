@@ -76,49 +76,38 @@ class Global @Inject()(crudServiceFS: CRUDServiceFS, cmwellRDFHelper: CMWellRDFH
 
     Subscriber.init
 
-    val recoverWithExitOnFail: PartialFunction[Throwable,Unit] = {
-      case err : Throwable => {
-        Logger.error("Failed to connect with CRUDService. Will exit now.",err)
-        sys.exit(1)
-      }
-    }
-
-    val recoverWithLogOnFail: PartialFunction[Try[SearchResults],Unit] = {
-      case Success(sr) => updateCaches(sr)
-      case Failure(ex) => logger.error("Failed to connect with CRUDService. Will exit now.",ex)
-    }
-
-    RequestMonitor.init
-
-    import scala.concurrent.duration._
-
-    scheduleAfterStart(30.seconds){
-      Try(cmwell.util.concurrent.retry(3) {
-          crudServiceFS.search(
-            pathFilter = Some(PathFilter("/meta/ns", descendants = false)),
-            fieldFilters = None,
-            datesFilter = None,
-            paginationParams = PaginationParams(0, initialMetaNsLoadingAmount),
-            withHistory = false,
-            withData = true,
-            fieldSortParams = SortParam.empty)
-        }.andThen(recoverWithLogOnFail)).recover{
-        case err: Throwable => logger.error("unexpected error occured in Global initialization",err)
-      }
-    }
-    Logger.info("Application has started")
+//    val updateCachesOrLogAndExitOnFail: PartialFunction[Try[SearchResults],Unit] = {
+//      case Success(sr) => updateCaches(sr)
+//      case Failure(ex) =>
+//        logger.error("Failed to connect with CRUDService. Will exit now.",ex)
+//        sys.exit(1)
+//    }
+//
+//    RequestMonitor.init
+//
+//    Try(cmwell.util.concurrent.retry(3) {
+//        crudServiceFS.search(
+//          pathFilter = Some(PathFilter("/meta/ns", descendants = false)),
+//          fieldFilters = None,
+//          datesFilter = None,
+//          paginationParams = PaginationParams(0, initialMetaNsLoadingAmount),
+//          withHistory = false,
+//          withData = true,
+//          fieldSortParams = SortParam.empty)
+//      }.andThen(updateCachesOrLogAndExitOnFail))
+//    Logger.info("Application has started")
   }
 
-  private def updateCaches(sr: SearchResults) = {
-
-    val groupedByUrls = sr.infotons.groupBy(_.fields.flatMap(_.get("url")))
-    val goodInfotons = groupedByUrls.collect { case (Some(k),v) if k.size==1 =>
-      val url = k.head.value.asInstanceOf[String]
-      cmwellRDFHelper.getTheFirstGeneratedMetaNsInfoton(url, v)
-    }
-
-    cmwellRDFHelper.loadNsCachesWith(goodInfotons.toSeq)
-  }
+//  private def updateCaches(sr: SearchResults) = {
+//
+//    val groupedByUrls = sr.infotons.groupBy(_.fields.flatMap(_.get("url")))
+//    val goodInfotons = groupedByUrls.collect { case (Some(k),v) if k.size==1 =>
+//      val url = k.head.value.asInstanceOf[String]
+//      cmwellRDFHelper.getTheFirstGeneratedMetaNsInfoton(url, v)
+//    }
+//
+//    cmwellRDFHelper.loadNsCachesWith(goodInfotons.toSeq)
+//  }
 
   def onStop {
     Grid.shutdown
