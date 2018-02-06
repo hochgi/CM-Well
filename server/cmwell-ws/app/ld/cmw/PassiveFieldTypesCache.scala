@@ -26,6 +26,7 @@ import wsutil.{FieldKey, NnFieldKey}
 
 import scala.collection.generic.CanBuildFrom
 import scala.collection.mutable.{Set => MSet}
+import scala.collection.immutable
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
@@ -180,10 +181,15 @@ abstract class PassiveFieldTypesCache(val cache: Cache[String,Either[Future[Set[
             if (System.currentTimeMillis() - ts > 30000) {
               actor ! RequestUpdateFor(field)
             }
-            Future.successful(types)
+            if(types.isEmpty) Future.failed(new NoSuchElementException(s"empty type set for [$field] ([$forceUpdateForType],[$maybeEither],${types.mkString("[",",","]")})"))
+            else Future.successful(types)
           case Some(forcedTypes) =>
             if(forcedTypes.diff(types).nonEmpty || (System.currentTimeMillis() - ts > 30000))
-              (actor ? UpdateAndGet(field)).mapTo[Set[Char]]
+              (actor ? UpdateAndGet(field)).mapTo[Set[Char]].transform {
+                case Success(s) if s.isEmpty => Failure(new NoSuchElementException(s"empty type set for [$field] ([$forceUpdateForType],[$maybeEither],${types.mkString("[",",","]")})"))
+                case t => t
+              }
+            else if(types.isEmpty) Future.failed(new NoSuchElementException(s"empty type set for [$field] ([$forceUpdateForType],[$maybeEither],${types.mkString("[",",","]")})"))
             else Future.successful(types)
         }
         case Left(fut) => fut

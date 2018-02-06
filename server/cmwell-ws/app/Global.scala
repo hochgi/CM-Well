@@ -29,14 +29,15 @@ import com.typesafe.scalalogging.LazyLogging
 import k.grid.{Grid, GridConnection}
 import k.grid.service.ServiceTypes
 import logic.CRUDServiceFS
-import play.api.{Logger, _}
-import security.NoncesManager
+import play.api.{Logger, controllers => _}
+import security.{EagerAuthCache, NoncesManager}
 import javax.inject._
 
 import cmwell.domain.SearchResults
+import controllers.IngestPushback
 
 import scala.concurrent.ExecutionContext
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import scala.util.{Failure, Success, Try}
 import uk.org.lidalia.sysoutslf4j.context.SysOutOverSLF4J
 
@@ -48,7 +49,7 @@ import uk.org.lidalia.sysoutslf4j.context.SysOutOverSLF4J
  * To change this template use File | Settings | File Templates.
  */
 @Singleton
-class Global @Inject()(crudServiceFS: CRUDServiceFS, cmwellRDFHelper: CMWellRDFHelper)(implicit ec: ExecutionContext) extends LazyLogging {
+class Global @Inject()(crudServiceFS: CRUDServiceFS, cmwellRDFHelper: CMWellRDFHelper, ingestPushback: IngestPushback, eagerAuthCache: EagerAuthCache)(implicit ec: ExecutionContext) extends LazyLogging {
 
   onStart
 
@@ -96,6 +97,11 @@ class Global @Inject()(crudServiceFS: CRUDServiceFS, cmwellRDFHelper: CMWellRDFH
 //          fieldSortParams = SortParam.empty)
 //      }.andThen(updateCachesOrLogAndExitOnFail))
 //    Logger.info("Application has started")
+
+    scheduleAfterStart(2.minutes){
+      ingestPushback.sometimeAfterStart
+      eagerAuthCache.sometimeAfterStart
+    }
   }
 
 //  private def updateCaches(sr: SearchResults) = {

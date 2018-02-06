@@ -108,10 +108,12 @@ object RawFieldFilter extends PrefixRequirement {
       Future.successful(fieldFilterWithExplicitUrlOpt.get)
     }
     case RawMultiFieldFilter(fo,rs) => Future.traverse(rs)(eval(_,cache,cmwellRDFHelper))(bo1,ec).map(MultiFieldFilter(fo, _))
-    case RawSingleFieldFilter(fo,vo,fk,v) => FieldKey.eval(fk,cache,cmwellRDFHelper)(ec).map{
-      case s if s.isEmpty => !!!
-      case s if s.size == 1 => mkSingleFieldFilter(fo,vo,s.head,v)
-      case s => MultiFieldFilter(fo,s.map(mkSingleFieldFilter(Should,vo,_,v))(bo2))
+    case RawSingleFieldFilter(fo,vo,fk,v) => FieldKey.eval(fk,cache,cmwellRDFHelper)(ec).transform {
+      case Success(s) if s.isEmpty => Failure(new Exception("cannot build FieldFilter from empty fields"))
+      case anyOtherCase => anyOtherCase.map { s =>
+        if (s.size == 1) mkSingleFieldFilter(fo, vo, s.head, v)
+        else MultiFieldFilter(fo, s.map(mkSingleFieldFilter(Should, vo, _, v))(bo2))
+      }
     }
   }
 
@@ -187,12 +189,13 @@ object FieldKey extends LazyLogging with PrefixRequirement  {
 
   def enrichWithTypes(fk: FieldKey, cache: PassiveFieldTypesCacheTrait): Future[Set[String]] = {
     import scala.concurrent.ExecutionContext.Implicits.global
-    cache.get(fk).map {
-      case s if s.isEmpty => throw new NoSuchElementException(s"No field types bookkeeping was found for $fk")
-      case s => s.map {
+    cache.get(fk).transform {
+      case Failure(_: NoSuchElementException) => Success(Set.empty) // not sure about it...
+//      case Success(s) if s.isEmpty => Failure(new NoSuchElementException(s"No field types bookkeeping was found for $fk"))
+      case s => s.map(_.map {
         case 's' => fk.internalKey
         case c => s"$c$$${fk.internalKey}"
-      }
+      })
     }
   }
 
