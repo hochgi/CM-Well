@@ -114,7 +114,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
   }
 
   private def metaNsFieldsValidator(i: Infoton, fields: Map[String, Set[FieldValue]], field: String): Try[String] = {
-    fields.get("prefix").fold[Try[String]](Failure(new IllegalStateException(s"$field field not found for /meta/ns infoton [${i.path}/${i.uuid}]"))) { values =>
+    fields.get(field).fold[Try[String]](Failure(new IllegalStateException(s"$field field not found for /meta/ns infoton [${i.path}/${i.uuid}]"))) { values =>
       if (values.isEmpty) Failure(new IllegalStateException(s"empty value set for $field field in /meta/ns infoton [${i.path}/${i.uuid}]"))
       else if(values.size > 1) Failure(new IllegalStateException(s"multiple values ${values.mkString("[,",",","]")} for $field field in /meta/ns infoton [${i.path}/${i.uuid}]"))
       else values.head.value match {
@@ -377,7 +377,11 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
       case Success(`url`) => Future.successful(hash -> Exists)
       case Failure(_: NoSuchElementException) => Future.successful(hash -> Create)
       case Failure(err) => Future.failed(new Exception(s"nsUrlToHash.inner failed for url [$url] and hash [$hash]",err))
-      case Success(_ /* not same url */) => inner(crc32base64(hash))
+      case Success(notSameUrl /* not same url */) => {
+        val doubleHash = crc32base64(hash)
+        logger.warn(s"double hashing url's [$url] hash [$hash] to [$doubleHash] because not same as [$notSameUrl]")
+        inner(doubleHash)
+      }
     }(globalExecutionContext)
 
 
