@@ -94,12 +94,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
       }
     }
   }{ notFoundIdentifier =>
-    crudServiceFS.getInfotonByPathAsync("/meta/ns/" + notFoundIdentifier).transform {
-      case Failure(error)            => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton",error))
-      case Success(EmptyBox)         => Failure(new NoSuchElementException(s"infoton not exists: /meta/ns/$notFoundIdentifier"))
-      case Success(BoxedFailure(ex)) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton from irw",ex))
-      case Success(FullBox(infoton)) => validateInfoton(infoton)
-    }(injectedExecutionContext)
+    hashToInfotonAsync(notFoundIdentifier)((_,tupleOfUrlPrefix) => tupleOfUrlPrefix)(injectedExecutionContext)
   }
 
   private def validateInfoton(infoton: Infoton): Try[(String,String)] = {
@@ -351,12 +346,14 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
 
 //  def hashToInfoton(hash: String): Option[Infoton] = Try(hashToMetaNsInfotonCache.getBlocking(hash)).toOption
 
-  def hashToInfotonAsync(hash: String)(ec: ExecutionContext): Future[Infoton] =
+  def hashToInfotonAsync[T](hash: String)(out: (Infoton,(String,String)) => T)(ec: ExecutionContext): Future[T] =
     crudServiceFS.getInfotonByPathAsync(s"/meta/ns/$hash").transform {
       case Failure(err) => Failure(new IllegalStateException(s"could not load /meta/ns/$hash",err))
       case Success(EmptyBox) => Failure(new NoSuchElementException(s"could not load /meta/ns/$hash"))
       case Success(BoxedFailure(err)) => Failure(new IllegalStateException(s"could not load /meta/ns/$hash from IRW",err))
-      case success => success.map(_.get)
+      case Success(FullBox(infoton)) =>
+        validateInfoton(infoton).transform(urlPrefix => Try(out(infoton, urlPrefix)),
+          e => Failure(new IllegalStateException(s"loaded invalid infoton for [$hash] / [$infoton]",e)))
     }(ec)
 
 //  def urlToInfoton(url: String): Option[Infoton] = Try(urlToMetaNsInfotonCache.getBlocking(url)).toOption
@@ -505,7 +502,7 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
         case Success(`url`) => infotons.find(_.name == hash).fold[Future[Either[String,Infoton]]]{
           logger.error(s"hash [$hash] returned the right url [$url], but was not found in original seq?!?!?")
           // getting the correct infoton anyway:
-          hashToInfotonAsync(hash)(globalExecutionContext).map(Right.apply)(globalExecutionContext)
+          hashToInfotonAsync(hash)((infoton,_) => infoton)(globalExecutionContext).map(Right.apply)(globalExecutionContext)
         }(Future.successful[Either[String,Infoton]] _ compose Right.apply)
         case Success(someOtherUrl) =>
           // Yes. I am aware the log will be printed in every iteration of the recursion. That's the point.

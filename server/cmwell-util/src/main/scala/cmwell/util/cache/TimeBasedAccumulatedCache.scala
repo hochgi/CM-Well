@@ -27,20 +27,20 @@ class TimeBasedAccumulatedCache[T,K,V1,V2] private(/*@volatile*/ private[this] v
   private[this] val isBeingUpdated = new AtomicBoolean(false)
   /*@volatile*/ private[this] var timestamp: Long = seedTimestamp
   /*@volatile*/ private[this] var checkTime: Long = System.currentTimeMillis()
-  private[this] var blacklist: Map[K,Long] = Map.empty
+  private[this] var blacklist: Map[K,(Long,Int)] = Map.empty
 
   @inline def getByV1(v1: V1): Option[K] = v1Cache.get(v1)
   @inline def getByV2(v2: V2): Option[K] = v2Cache.get(v2)
   @inline def get(key: K): Option[(V1,V2)] = mainCache.get(key).orElse(blacklist.get(key) match {
-    case Some(time) if System.currentTimeMillis() - time > 10000L => getAnywayBlockingOnGlobal(key)
-    case None => getAnywayBlockingOnGlobal(key)
+    case Some((time,count)) if System.currentTimeMillis() - time > 1000L*count => getAnywayBlockingOnGlobal(key, count+1)
+    case None => getAnywayBlockingOnGlobal(key, 1)
     case _ => None // last time we forcibly checked for `key` was less than 10 seconds ago
   })
 
-  @inline private[this] def getAnywayBlockingOnGlobal(key: K): Option[(V1,V2)] = {
+  @inline private[this] def getAnywayBlockingOnGlobal(key: K, count: Int): Option[(V1,V2)] = {
     val rv = Await.result(updateAndGet(key)(globalExecutionContext), Duration.Inf)
     rv match {
-      case None => blacklist += key -> System.currentTimeMillis()
+      case None => blacklist = blacklist.updated(key, System.currentTimeMillis() -> count)
       case Some(_) => blacklist -= key
     }
     rv

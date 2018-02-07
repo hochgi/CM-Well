@@ -1005,10 +1005,12 @@ class APIFunctionalityTests extends AsyncFunSpec
       val f09 = f00.flatMap(_ => Http.get(mZ, List("xg" -> "$http://purl.org/vocab/relationship/colleagueOf$>$http://purl.org/vocab/relationship/employedBy$>$http://purl.org/vocab/relationship/mentorOf$>$http://purl.org/vocab/relationship/friendOf$>$http://purl.org/vocab/relationship/worksWith$>$http://purl.org/vocab/relationship/parentOf$","format" -> "json")))
       val f10 = f00.flatMap(_ => Http.get(mZ, List("xg" -> "colleagueOf.rel>employedBy.rel>mentorOf.rel>friendOf.rel>worksWith.rel>parentOf.rel","format" -> "json")))
       val f11 = f00.flatMap(_ => Http.get(mZ, List("xg" -> "colleagueOf.rel[doesNotExist:]>employedBy.rel>mentorOf.rel>friendOf.rel>worksWith.rel>parentOf.rel","format" -> "json")))
-      val f12 = f00.flatMap(_ => Http.get(cKent, List("yg" -> s"<neighborOf.$$${ns.rel}>worksWith.$$${ns.rel}|<neighborOf.$$${ns.rel}<friendOf.$$${ns.rel}<mentorOf.$$${ns.rel}>knowsByReputation.$$${ns.rel}<collaboratesWith.$$${ns.rel}","format" -> "json")))
-      val f13 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<$http://purl.org/vocab/relationship/neighborOf$>$http://purl.org/vocab/relationship/worksWith$|<$http://purl.org/vocab/relationship/neighborOf$<$http://purl.org/vocab/relationship/friendOf$<$http://purl.org/vocab/relationship/mentorOf$>$http://purl.org/vocab/relationship/knowsByReputation$<$http://purl.org/vocab/relationship/collaboratesWith$","format" -> "json")))
-      val f14 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<neighborOf.rel>worksWith.rel|<neighborOf.rel<friendOf.rel<mentorOf.rel>knowsByReputation.rel<collaboratesWith.rel","format" -> "json")))
-      val f15 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<neighborOf.rel[active.bold::true]>worksWith.rel[active.bold::false]|<neighborOf.rel[active.bold::true]<friendOf.rel[doesNotExist::SomeValue]<mentorOf.rel>knowsByReputation.rel<collaboratesWith.rel","format" -> "json")))
+      val f12 = f00.flatMap(_ => Http.get(mZ, List("xg" -> "colleagueOf.rel[system.path:/not/real]>employedBy.rel>mentorOf.rel>friendOf.rel>worksWith.rel>parentOf.rel","format" -> "json")))
+      val f13 = f00.flatMap(_ => Http.get(cKent, List("yg" -> s"<neighborOf.$$${ns.rel}>worksWith.$$${ns.rel}|<neighborOf.$$${ns.rel}<friendOf.$$${ns.rel}<mentorOf.$$${ns.rel}>knowsByReputation.$$${ns.rel}<collaboratesWith.$$${ns.rel}","format" -> "json")))
+      val f14 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<$http://purl.org/vocab/relationship/neighborOf$>$http://purl.org/vocab/relationship/worksWith$|<$http://purl.org/vocab/relationship/neighborOf$<$http://purl.org/vocab/relationship/friendOf$<$http://purl.org/vocab/relationship/mentorOf$>$http://purl.org/vocab/relationship/knowsByReputation$<$http://purl.org/vocab/relationship/collaboratesWith$","format" -> "json")))
+      val f15 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<neighborOf.rel>worksWith.rel|<neighborOf.rel<friendOf.rel<mentorOf.rel>knowsByReputation.rel<collaboratesWith.rel","format" -> "json")))
+      val f16 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<neighborOf.rel[active.bold::true]>worksWith.rel[active.bold::false]|<neighborOf.rel[active.bold::true]<friendOf.rel[doesNotExist::SomeValue]<mentorOf.rel>knowsByReputation.rel<collaboratesWith.rel","format" -> "json")))
+      val f17 = f00.flatMap(_ => Http.get(cKent, List("yg" -> "<neighborOf.rel[active.bold::true]>worksWith.rel[active.bold::false]|<neighborOf.rel[active.bold::true]<friendOf.rel[system.path:/not/real]<mentorOf.rel>knowsByReputation.rel<collaboratesWith.rel","format" -> "json")))
 
       it("should post N-Triple files") {
         Future.traverse(Seq("/relationships.nt","/relationships2.nt")) { file =>
@@ -1090,10 +1092,19 @@ class APIFunctionalityTests extends AsyncFunSpec
         }
       }
 
+      it("should FAIL to expand 6 levels deep if guarded by a non existed filter") {
+        f11.map { res =>
+          val str = new String(res.payload, "UTF-8")
+          withClue(s"got: $str") {
+            res.status should be(400)
+          }
+        }
+      }
+
       it("should NOT expand 6 levels deep if guarded by a filter") {
         val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","system":{"path":"/example.net/Individuals/M_Z","parent":"/example.net/Individuals","dataCenter":"$dcName"},"fields":{"colleagueOf.rel":["http://example.net/Individuals/I_K"]}}]}"""
         val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
-        f11.map { res =>
+        f12.map { res =>
           val str = new String(res.payload, "UTF-8")
           val jsn = Json.parse(res.payload).transform(bagUuidDateEraserAndSorter)
           withClue(s"got: $str") {
@@ -1106,7 +1117,7 @@ class APIFunctionalityTests extends AsyncFunSpec
       it("should allow paths expansion with yg flag with explicit $ namespace") {
         val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/JohnSmith","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"parentOf.rel":["http://example.org/Individuals/SaraSmith"],"friendOf.rel":["http://example.org/Individuals/PeterParker"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/RonaldKhun","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"collaboratesWith.rel":["http://example.org/Individuals/MartinOdersky"],"category.bold":["deals","news"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/HarryMiller","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"parentOf.rel":["http://example.org/Individuals/NatalieMiller"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/DonaldDuck","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"knowsByReputation.rel":["http://example.org/Individuals/MartinOdersky"],"active.bold":["true"],"mentorOf.rel":["http://example.org/Individuals/JohnSmith"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/ClarkKent","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"neighborOf.rel":["http://example.org/Individuals/PeterParker"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/PeterParker","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"active.bold":["true"],"worksWith.rel":["http://example.org/Individuals/HarryMiller"],"neighborOf.rel":["http://example.org/Individuals/ClarkKent"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/MartinOdersky","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"collaboratesWith.rel":["http://example.org/Individuals/RonaldKhun"],"active.bold":["true"]}}]}"""
         val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
-        f12.map { res =>
+        f13.map { res =>
           Json
             .parse(res.payload)
             .transform(bagUuidDateEraserAndSorter)
@@ -1117,7 +1128,7 @@ class APIFunctionalityTests extends AsyncFunSpec
       it("should allow paths expansion with yg flag using full NS URI") {
         val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/JohnSmith","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"parentOf.rel":["http://example.org/Individuals/SaraSmith"],"friendOf.rel":["http://example.org/Individuals/PeterParker"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/RonaldKhun","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"collaboratesWith.rel":["http://example.org/Individuals/MartinOdersky"],"category.bold":["deals","news"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/HarryMiller","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"parentOf.rel":["http://example.org/Individuals/NatalieMiller"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/DonaldDuck","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"knowsByReputation.rel":["http://example.org/Individuals/MartinOdersky"],"active.bold":["true"],"mentorOf.rel":["http://example.org/Individuals/JohnSmith"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/ClarkKent","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"neighborOf.rel":["http://example.org/Individuals/PeterParker"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/PeterParker","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"active.bold":["true"],"worksWith.rel":["http://example.org/Individuals/HarryMiller"],"neighborOf.rel":["http://example.org/Individuals/ClarkKent"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/MartinOdersky","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"collaboratesWith.rel":["http://example.org/Individuals/RonaldKhun"],"active.bold":["true"]}}]}"""
         val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
-        f13.map { res =>
+        f14.map { res =>
           Json
             .parse(res.payload)
             .transform(bagUuidDateEraserAndSorter)
@@ -1128,7 +1139,7 @@ class APIFunctionalityTests extends AsyncFunSpec
       it("should allow paths expansion with yg flag with implicit namespace") {
         val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/JohnSmith","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"parentOf.rel":["http://example.org/Individuals/SaraSmith"],"friendOf.rel":["http://example.org/Individuals/PeterParker"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/RonaldKhun","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"collaboratesWith.rel":["http://example.org/Individuals/MartinOdersky"],"category.bold":["deals","news"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/HarryMiller","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"parentOf.rel":["http://example.org/Individuals/NatalieMiller"],"active.bold":["true"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/DonaldDuck","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"knowsByReputation.rel":["http://example.org/Individuals/MartinOdersky"],"active.bold":["true"],"mentorOf.rel":["http://example.org/Individuals/JohnSmith"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/ClarkKent","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"neighborOf.rel":["http://example.org/Individuals/PeterParker"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/PeterParker","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"active.bold":["true"],"worksWith.rel":["http://example.org/Individuals/HarryMiller"],"neighborOf.rel":["http://example.org/Individuals/ClarkKent"]}},{"type":"ObjectInfoton","system":{"path":"/example.org/Individuals/MartinOdersky","parent":"/example.org/Individuals","dataCenter":"$dcName"},"fields":{"collaboratesWith.rel":["http://example.org/Individuals/RonaldKhun"],"active.bold":["true"]}}]}"""
         val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
-        f14.map { res =>
+        f15.map { res =>
           Json
             .parse(res.payload)
             .transform(bagUuidDateEraserAndSorter)
@@ -1136,10 +1147,19 @@ class APIFunctionalityTests extends AsyncFunSpec
         }
       }
 
+      it("should NOT allow limited paths expansion if guarded by non existed filters") {
+        f16.map { res =>
+          val str = new String(res.payload, "UTF-8")
+          withClue(s"got: $str") {
+            res.status should be(400)
+          }
+        }
+      }
+
       it("should allow limited paths expansion if guarded by filters") {
         val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","fields":{"neighborOf.rel":["http://example.org/Individuals/PeterParker"]},"system":{"path":"/example.org/Individuals/ClarkKent","dataCenter":"$dcName","parent":"/example.org/Individuals"}},{"type":"ObjectInfoton","fields":{"worksWith.rel":["http://example.org/Individuals/HarryMiller"],"neighborOf.rel":["http://example.org/Individuals/ClarkKent"],"active.bold":["true"]},"system":{"path":"/example.org/Individuals/PeterParker","dataCenter":"$dcName","parent":"/example.org/Individuals"}}]}"""
         val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
-        f15.map { res =>
+        f17.map { res =>
           val str = new String(res.payload, "UTF-8")
           val jsn = Json.parse(res.payload).transform(bagUuidDateEraserAndSorter)
           withClue(s"got: $str") {
