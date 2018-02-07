@@ -109,7 +109,7 @@ object RawFieldFilter extends PrefixRequirement {
     }
     case RawMultiFieldFilter(fo,rs) => Future.traverse(rs)(eval(_,cache,cmwellRDFHelper))(bo1,ec).map(MultiFieldFilter(fo, _))
     case RawSingleFieldFilter(fo,vo,fk,v) => FieldKey.eval(fk,cache,cmwellRDFHelper)(ec).transform {
-      case Success(s) if s.isEmpty => Failure(new Exception("cannot build FieldFilter from empty fields"))
+      case Success(s) if s.isEmpty => Failure(new Exception(s"cannot build FieldFilter from empty fields [$rff]"))
       case anyOtherCase => anyOtherCase.map { s =>
         if (s.size == 1) mkSingleFieldFilter(fo, vo, s.head, v)
         else MultiFieldFilter(fo, s.map(mkSingleFieldFilter(Should, vo, _, v))(bo2))

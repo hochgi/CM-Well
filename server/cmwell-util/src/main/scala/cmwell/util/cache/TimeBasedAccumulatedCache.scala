@@ -1,10 +1,13 @@
 package cmwell.util.cache
 
 import java.util.concurrent.atomic.AtomicBoolean
+
 import com.typesafe.scalalogging.LazyLogging
-import scala.concurrent.duration.{DurationInt, FiniteDuration}
-import scala.concurrent.{ExecutionContext, Future}
-import scala.util.Try
+
+import scala.concurrent.duration.{Duration, DurationInt, FiniteDuration}
+import scala.concurrent.{Await, ExecutionContext, Future}
+import ExecutionContext.{global => globalExecutionContext}
+import scala.util.{Failure, Success, Try}
 
 /**
   * Proj: server
@@ -24,18 +27,29 @@ class TimeBasedAccumulatedCache[T,K,V1,V2] private(/*@volatile*/ private[this] v
   private[this] val isBeingUpdated = new AtomicBoolean(false)
   /*@volatile*/ private[this] var timestamp: Long = seedTimestamp
   /*@volatile*/ private[this] var checkTime: Long = System.currentTimeMillis()
+  private[this] var blacklist: Map[K,Long] = Map.empty
 
-//  My original thought was to have a black list of keys that has been asked for
-//  to prevent abuse of asking the same non existing key repeatedly.
-//  This may be redundant, since `updatedRecently` guards us from doing it too frequently...
-//
-//  @volatile private[this] var blacklist: Map[K,Long] = Map.empty
-
-  @inline def get(key: K): Option[(V1,V2)] = mainCache.get(key)
   @inline def getByV1(v1: V1): Option[K] = v1Cache.get(v1)
   @inline def getByV2(v2: V2): Option[K] = v2Cache.get(v2)
+  @inline def get(key: K): Option[(V1,V2)] = mainCache.get(key).orElse(blacklist.get(key) match {
+    case Some(time) if System.currentTimeMillis() - time > 10000L => getAnywayBlockingOnGlobal(key)
+    case None => getAnywayBlockingOnGlobal(key)
+    case _ => None // last time we forcibly checked for `key` was less than 10 seconds ago
+  })
 
-  def getOrElseUpdate(key: K)(implicit ec: ExecutionContext): Future[Option[(V1,V2)]] = get(key).fold {
+  @inline private[this] def getAnywayBlockingOnGlobal(key: K): Option[(V1,V2)] = {
+    val rv = Await.result(updateAndGet(key)(globalExecutionContext), Duration.Inf)
+    rv match {
+      case None => blacklist += key -> System.currentTimeMillis()
+      case Some(_) => blacklist -= key
+    }
+    rv
+  }
+
+  @inline def getOrElseUpdate(key: K)(implicit ec: ExecutionContext): Future[Option[(V1,V2)]] =
+    get(key).fold(updateAndGet(key))(Future.successful[Option[(V1,V2)]] _ compose Some.apply)
+
+  def updateAndGet(key: K)(implicit ec: ExecutionContext): Future[Option[(V1,V2)]] = {
     if(updatedRecently || !isBeingUpdated.compareAndSet(false,true)) Future.successful(None)
     else Try(accumulateSince(timestamp)).fold(Future.failed,identity).flatMap { results =>
       val (newTimestamp, newVals) = /*Try(*/timestampAndEntriesFromResults(results)/*).recover {
@@ -52,16 +66,20 @@ class TimeBasedAccumulatedCache[T,K,V1,V2] private(/*@volatile*/ private[this] v
         v2Cache ++= v2Additions
         timestamp = newTimestamp
         newVals.get(key).fold[Future[Option[(V1,V2)]]] {
-          Try(getSingle(key)).fold(Future.failed,identity).map { case v@(v1,v2) =>
-            mainCache += key -> v
-            v1Cache += v1 -> key
-            v2Cache += v2 -> key
-            Some(v)
+          Try(getSingle(key)).fold(Future.failed,identity).transform {
+            case Failure(_: NoSuchElementException) => Success(None)
+            case t => t map {
+              case v@(v1,v2) =>
+                mainCache += key -> v
+                v1Cache += v1 -> key
+                v2Cache += v2 -> key
+                Some(v)
+            }
           }
         }(Future.successful[Option[(V1,V2)]] _ compose Some.apply)
       }
     }.andThen { case _ => isBeingUpdated.set(false) }
-  }(Future.successful[Option[(V1,V2)]] _ compose Some.apply)
+  }
 
   def invalidate(k: K)(implicit ec: ExecutionContext): Future[Unit] = {
     mainCache.get(k).fold(Future.successful(())) { case (v1, v2) =>

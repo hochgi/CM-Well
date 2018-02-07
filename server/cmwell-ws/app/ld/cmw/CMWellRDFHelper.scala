@@ -95,9 +95,9 @@ class CMWellRDFHelper @Inject()(val crudServiceFS: CRUDServiceFS, injectedExecut
     }
   }{ notFoundIdentifier =>
     crudServiceFS.getInfotonByPathAsync("/meta/ns/" + notFoundIdentifier).transform {
-      case Failure(err) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton",err))
-      case Success(EmptyBox) =>  Failure(new NoSuchElementException(s"infoton not exists: /meta/ns/$notFoundIdentifier"))
-      case Success(BoxedFailure(err)) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton from irw",err))
+      case Failure(error)            => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton",error))
+      case Success(EmptyBox)         => Failure(new NoSuchElementException(s"infoton not exists: /meta/ns/$notFoundIdentifier"))
+      case Success(BoxedFailure(ex)) => Failure(new IllegalStateException(s"failed to load problematic /meta/ns/$notFoundIdentifier infoton from irw",ex))
       case Success(FullBox(infoton)) => validateInfoton(infoton)
     }(injectedExecutionContext)
   }
