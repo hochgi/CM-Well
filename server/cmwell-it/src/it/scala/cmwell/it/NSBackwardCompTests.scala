@@ -55,12 +55,10 @@ class NSBackwardCompTests extends AsyncFunSpec with Matchers with Helpers with f
       }
     }
     val oldStyleNSDataIngest = {
-      val _cmd = cmw / "_cmd"
       val data = """
-                   |<cmwell://meta/ns/common-7270120a> <cmwell://meta/nn#url_hash> "7270120a" .
-                   |<cmwell://meta/ns/common-7270120a> <cmwell://meta/nn#url> <http://permid.org/ontology/common/> .
+                   |<> <cmwell://meta/ns#common-7270120a> <http://permid.org/ontology/common/> .
                  """.stripMargin
-      Http.post(_cmd, data, Some("text/plain;charset=UTF-8"), List("op" -> "init", "format" -> "ntriples"), tokenHeader).map { res =>
+      Http.post(_in, data, Some("text/plain;charset=UTF-8"), List("format" -> "ntriples"), tokenHeader).map { res =>
         Json.parse(res.payload) should be(jsonSuccess)
       }
     }
@@ -164,9 +162,11 @@ class NSBackwardCompTests extends AsyncFunSpec with Matchers with Helpers with f
 
       val verifyingOldNSAsJson = executeAfterIndexing {
         spinCheck(100.millis,true)(Http.get(pathForOldNS, List("format" -> "json")))(_.status).map { res =>
-          Json.parse(res.payload)
-            .transform((__ \ 'system \ 'indexTime).json.prune andThen fieldsSorter)
-            .get shouldEqual expectedJsonForOldNS
+          withClue(res) {
+            Json.parse(res.payload)
+              .transform((__ \ 'system \ 'indexTime).json.prune andThen fieldsSorter)
+              .get shouldEqual expectedJsonForOldNS
+          }
         }
       }
 
@@ -183,17 +183,19 @@ class NSBackwardCompTests extends AsyncFunSpec with Matchers with Helpers with f
         executeAfterIndexing {
           spinCheck(100.millis,true)(Http.get(pathForOldNS, List("format" -> "ntriples")))(_.status).map { res =>
 
-            //status should be OK
-            res.status should be >= 200
-            res.status should be < 400
+            withClue(res) {
+              //status should be OK
+              res.status should be >= 200
+              res.status should be < 400
 
-            new String(res.payload, "UTF-8")
-              .lines
-              .filterNot(_.contains("/meta/sys#"))
-              .toSeq
-              .map(_.trim)
-              .sorted
-              .mkString("\n") shouldEqual ntriples
+              new String(res.payload, "UTF-8")
+                .lines
+                .filterNot(_.contains("/meta/sys#"))
+                .toSeq
+                .map(_.trim)
+                .sorted
+                .mkString("\n") shouldEqual ntriples
+            }
           }
         }
       }
@@ -202,7 +204,7 @@ class NSBackwardCompTests extends AsyncFunSpec with Matchers with Helpers with f
         spinCheck(100.millis,true)(Http.get(
           exampleNetPath,
           List("op" -> "search", "qp" -> "NOTE.vcard:note", "with-descendants" -> "true", "with-data" -> "true", "format" -> "n3")
-        ))(_.status == 422).map(_.status shouldEqual 422)
+        ))(_.status == 424).map(res => withClue(res)(res.status shouldEqual 424))
       }
 
       val explicitNSSearchSuccess = executeAfterIndexing {
@@ -392,7 +394,7 @@ class NSBackwardCompTests extends AsyncFunSpec with Matchers with Helpers with f
       val jSmithImplicitXg = executeAfterIndexing {
         spinCheck(100.millis,true)(
           Http.get(jSmith, List("format" -> "json", "xg" -> "ADR.vcard"))
-        )(_.status == 422).map(_.status shouldEqual 422)
+        )(_.status == 422).map(r => withClue(r)(r.status shouldEqual 422))
       }
       val jSmithExplicitBulkXg = executeAfterIndexing {
         spinCheck(100.millis,true)(
@@ -410,7 +412,7 @@ class NSBackwardCompTests extends AsyncFunSpec with Matchers with Helpers with f
       val jSmithImplicitBulkXg = executeAfterIndexing {
         spinCheck(100.millis,true)(
           jSmithUnderscoreOut()
-        )(_.status == 422).map(_.status shouldEqual 422)
+        )(_.status == 422).map(r => withClue(r)(r.status shouldEqual 422))
       }
 
       //changing the data

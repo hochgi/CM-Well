@@ -38,7 +38,7 @@ class TimeBasedAccumulatedCache[T,K,V1,V2] private(/*@volatile*/ private[this] v
   })
 
   @inline private[this] def getAnywayBlockingOnGlobal(key: K, count: Int): Option[(V1,V2)] = {
-    val rv = Await.result(getAndUpdateSingle(key)(globalExecutionContext), Duration.Inf)
+    val rv = Await.result(getAndUpdateSingle(key,true)(globalExecutionContext), Duration.Inf)
     rv match {
       case None => blacklist = blacklist.updated(key, System.currentTimeMillis() -> count)
       case Some(_) => blacklist -= key
@@ -52,11 +52,8 @@ class TimeBasedAccumulatedCache[T,K,V1,V2] private(/*@volatile*/ private[this] v
   private[this] def updateAndGet(key: K)(implicit ec: ExecutionContext): Future[Option[(V1,V2)]] = {
     if(updatedRecently || !isBeingUpdated.compareAndSet(false,true)) Future.successful(mainCache.get(key))
     else Try(accumulateSince(timestamp)).fold(Future.failed,identity).flatMap { results =>
-      val (newTimestamp, newVals) = /*Try(*/timestampAndEntriesFromResults(results)/*).recover {
-        case err: Throwable =>
-          logger.error(s"fetchTimeStampAndEntriesFromResults threw an exception", err)
-          (timestamp, Map.empty[K,V])
-      }.get*/
+      val (newTimestamp, newVals) = timestampAndEntriesFromResults(results)
+
       checkTime = System.currentTimeMillis()
       if(newVals.isEmpty) Future.successful(mainCache.get(key))
       else {
@@ -66,23 +63,33 @@ class TimeBasedAccumulatedCache[T,K,V1,V2] private(/*@volatile*/ private[this] v
         v2Cache ++= v2Additions
         timestamp = newTimestamp
         newVals.get(key).fold[Future[Option[(V1,V2)]]] {
-          getAndUpdateSingle(key)
+          getAndUpdateSingle(key,false)
         }(Future.successful[Option[(V1,V2)]] _ compose Some.apply)
       }
     }.andThen { case _ => isBeingUpdated.set(false) }
   }
 
-  private[this] def getAndUpdateSingle(key: K)(implicit ec: ExecutionContext): Future[Option[(V1,V2)]] =
-    Try(getSingle(key)).fold(Future.failed,identity).transform {
-      case Failure(_: NoSuchElementException) => Success(None)
-      case t => t map {
-        case v@(v1, v2) =>
-          mainCache += key -> v
-          v1Cache += v1 -> key
-          v2Cache += v2 -> key
-          Some(v)
+  @inline private[this] def getAndUpdateSingle(key: K, shouldAcquireLock: Boolean)(implicit ec: ExecutionContext): Future[Option[(V1,V2)]] = {
+    val whenLocked = {
+      if (shouldAcquireLock) acquireLock()
+      else Future.successful(())
+    }
+    val f = whenLocked.flatMap { _ =>
+      Try(getSingle(key)).fold(Future.failed, identity).transform {
+        case Failure(_: NoSuchElementException) => Success(None)
+        case t => t map {
+          case v@(v1, v2) =>
+            mainCache += key -> v
+            v1Cache += v1 -> key
+            v2Cache += v2 -> key
+            Some(v)
+        }
       }
     }
+
+    if(!shouldAcquireLock) f
+    else f.andThen{ case _ => isBeingUpdated.set(false) }
+  }
 
   def invalidate(k: K)(implicit ec: ExecutionContext): Future[Unit] = {
     mainCache.get(k).fold(Future.successful(())) { case (v1, v2) =>
