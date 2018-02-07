@@ -56,6 +56,16 @@ class APIFunctionalityTests extends AsyncFunSpec
 
   describe("CM-Well REST API"){
 
+    val antiJenaVcardRFFIngest = {
+      val vcardRdf = Source.fromURL(this.getClass.getResource("/anti_jena_ns.xml")).mkString
+      Http.post(_in, vcardRdf, Some("application/rdf+xml;charset=UTF-8"), List("format" -> "rdfxml"), tokenHeader)
+    }
+
+    val complicatedInferenceIngest = {
+      val zzz = Source.fromURL(this.getClass.getResource("/zzz.rdf")).mkString
+      Http.post(_in, zzz, Some("application/rdf+xml;charset=UTF-8"), List("format" -> "rdfxml"), tokenHeader)
+    }
+
     describe("post sem-web doc to _in") {
       describe("with RDF format") {
 
@@ -69,8 +79,7 @@ class APIFunctionalityTests extends AsyncFunSpec
         }
 
         it("should post with anti jena new onthology"){
-          val vcardRdf = Source.fromURL(this.getClass.getResource("/anti_jena_ns.xml")).mkString
-          Http.post(_in, vcardRdf, Some("application/rdf+xml;charset=UTF-8"), List("format" -> "rdfxml"), tokenHeader).map { res =>
+          antiJenaVcardRFFIngest.map { res =>
             withClue(res) {
               Json.parse(res.payload) should be(jsonSuccess)
             }
@@ -78,8 +87,7 @@ class APIFunctionalityTests extends AsyncFunSpec
         }
 
         it("should post with complicated inference logic"){
-          val zzz = Source.fromURL(this.getClass.getResource("/zzz.rdf")).mkString
-          Http.post(_in, zzz, Some("application/rdf+xml;charset=UTF-8"), List("format" -> "rdfxml"), tokenHeader).map { res =>
+          complicatedInferenceIngest.map { res =>
             withClue(res) {
               Json.parse(res.payload) should be(jsonSuccess)
             }
@@ -565,31 +573,41 @@ class APIFunctionalityTests extends AsyncFunSpec
           |}
         """.stripMargin)
         val g = clf / "ce" / "GH"
-        Http.get(g, List("format" -> "json")).map { res =>
-          withClue(res) {
-            val jv = Json.parse(res.payload).transform(uuidDateEraser).get
-            jv shouldEqual expected
+        executeAfterCompletion(antiJenaVcardRFFIngest)(scheduleFuture(10.seconds){
+          Http.get(g, List("format" -> "json")).map { res =>
+            withClue(res) {
+              val jv = Json.parse(res.payload).transform(uuidDateEraser).get
+              jv shouldEqual expected
+            }
           }
-        }
+        })
       }
 
       it("should deal with complicated prefix inference logic") {
-        val expectedNt = Set[String](s"""<http://example.org/hochgi> <${cmw.url}/meta/sys#type> "ObjectInfoton" .""",
-            """<http://example.org/hochgi> <http://zzz.me/2014/ZzZzz/2014-06-24#FN> "G H" .""",
-            """<http://example.org/hochgi> <http://zzz.me/2014/ZzZzz/2014-06-24#GENDER> "Male" .""",
-            """<http://example.org/hochgi> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://zzz.me/2014/ZzZzz/2014-06-24#Individual> .""",
-            s"""<http://example.org/hochgi> <http://localhost:9000/meta/sys#dataCenter> "$dcName" .""",
-            """<http://example.org/hochgi> <http://localhost:9000/meta/sys#parent> "/example.org" .""",
-            """<http://example.org/hochgi> <http://localhost:9000/meta/sys#path> "/example.org/hochgi" ."""
+        val expectedNt = Set[String](
+          s"""<http://example.org/hochgi> <${cmw.url}/meta/sys#type> "ObjectInfoton" .""",
+          """<http://example.org/hochgi> <http://zzz.me/2014/ZzZzz/2014-06-24#FN> "G H" .""",
+          """<http://example.org/hochgi> <http://zzz.me/2014/ZzZzz/2014-06-24#GENDER> "Male" .""",
+          """<http://example.org/hochgi> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://zzz.me/2014/ZzZzz/2014-06-24#Individual> .""",
+          s"""<http://example.org/hochgi> <http://localhost:9000/meta/sys#dataCenter> "$dcName" .""",
+          """<http://example.org/hochgi> <http://localhost:9000/meta/sys#parent> "/example.org" .""",
+          """<http://example.org/hochgi> <http://localhost:9000/meta/sys#path> "/example.org/hochgi" ."""
         )
 
-        Http.get(exampleOrg./("hochgi"), List("format" -> "ntriples")).map{ body =>
-          body.status should be >=200
-          body.status should be <400 //status should be OK
+        executeAfterCompletion(complicatedInferenceIngest)(scheduleFuture(10.seconds) {
+          Http.get(exampleOrg./("hochgi"), List("format" -> "ntriples")).map { body =>
+            body.status should be >= 200
+            body.status should be < 400 //status should be OK
           def mSys(s: String) = s"/meta/sys#$s"
-          val res = (new String(body.payload, "UTF-8")).split('\n').filterNot(t => t.contains(mSys("lastModified")) || t.contains(mSys("uuid")) || t.contains(mSys("indexTime")))
-          res.toSet shouldEqual expectedNt
-        }
+
+            val res = new String(body.payload, "UTF-8").split('\n').filterNot { t =>
+              t.contains(mSys("lastModified")) ||
+                t.contains(mSys("uuid"))       ||
+                t.contains(mSys("indexTime"))
+            }
+            res.toSet shouldEqual expectedNt
+          }
+        })
       }
 
       it("should verify ZzZzz meta creation") {
@@ -1092,11 +1110,15 @@ class APIFunctionalityTests extends AsyncFunSpec
         }
       }
 
-      it("should FAIL to expand 6 levels deep if guarded by a non existed filter") {
+      it("should NOT to expand 6 levels deep if guarded by a non existed filter") {
+        val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","system":{"path":"/example.net/Individuals/M_Z","parent":"/example.net/Individuals","dataCenter":"$dcName"},"fields":{"colleagueOf.rel":["http://example.net/Individuals/I_K"]}}]}"""
+        val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
         f11.map { res =>
           val str = new String(res.payload, "UTF-8")
+          val jsn = Json.parse(res.payload).transform(bagUuidDateEraserAndSorter)
           withClue(s"got: $str") {
-            res.status should be(400)
+            jsn.isSuccess should be(true)
+            jsn.get shouldEqual expected
           }
         }
       }
@@ -1148,10 +1170,14 @@ class APIFunctionalityTests extends AsyncFunSpec
       }
 
       it("should NOT allow limited paths expansion if guarded by non existed filters") {
+        val j = s"""{"type":"BagOfInfotons","infotons":[{"type":"ObjectInfoton","fields":{"neighborOf.rel":["http://example.org/Individuals/PeterParker"]},"system":{"path":"/example.org/Individuals/ClarkKent","dataCenter":"$dcName","parent":"/example.org/Individuals"}},{"type":"ObjectInfoton","fields":{"worksWith.rel":["http://example.org/Individuals/HarryMiller"],"neighborOf.rel":["http://example.org/Individuals/ClarkKent"],"active.bold":["true"]},"system":{"path":"/example.org/Individuals/PeterParker","dataCenter":"$dcName","parent":"/example.org/Individuals"}}]}"""
+        val expected = Json.parse(j.getBytes("UTF-8")).transform(bagUuidDateEraserAndSorter).get
         f16.map { res =>
           val str = new String(res.payload, "UTF-8")
+          val jsn = Json.parse(res.payload).transform(bagUuidDateEraserAndSorter)
           withClue(s"got: $str") {
-            res.status should be(400)
+            jsn.isSuccess should be(true)
+            jsn.get shouldEqual expected
           }
         }
       }
